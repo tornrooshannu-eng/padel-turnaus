@@ -312,6 +312,7 @@ function renderSetup() {
   const cur = state.seriesId && seriesById(state.seriesId);
   const changed = cur && (cur.players.length !== n || cur.players.some(name => !isSelected(name)));
   app.innerHTML = `
+  ${installCardHtml()}
   ${series.length ? `
   <section class="card">
     <h2>⭐ Vakioturnaukset</h2>
@@ -403,6 +404,7 @@ function renderSetup() {
   pick.onclick = openPicker;
   const sl = document.getElementById('saveListBtn');
   if (sl) sl.onclick = saveCurrentAsList;
+  bindInstallCard();
   app.querySelectorAll('[data-series]').forEach(b => b.onclick = () => { selectSeries(b.dataset.series); save(); render(); });
   app.querySelectorAll('[data-stats]').forEach(b => b.onclick = () => openStats(b.dataset.stats, 'tournament'));
   const cs = document.getElementById('clearSeries');
@@ -1000,6 +1002,45 @@ function selectSeries(id) {
   s.players.forEach(rememberPlayer);
   state.format = s.format || state.format;
   state.points = s.points || state.points;
+}
+
+/* ---------- asennettava sovellus (PWA) ---------- */
+let installPrompt = null;
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const installDismissed = () => { try { return !!localStorage.getItem('padel-install-dismissed'); } catch (e) { return false; } };
+const rerenderSetup = () => { if (state.page === 'tournament' && state.phase === 'setup') render(); };
+
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; rerenderSetup(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; rerenderSetup(); });
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => { /* ei offline-tukea */ }));
+}
+
+function installCardHtml() {
+  if (isStandalone() || installDismissed()) return '';
+  if (installPrompt) return `
+  <div class="info install">
+    <span>📲 Asenna sovellus puhelimeen: oma kuvake ja toimii myös ilman nettiä.</span>
+    <div class="row"><button id="installBtn" class="primary">Asenna</button><button class="icon" id="installX" aria-label="Piilota">✕</button></div>
+  </div>`;
+  if (isIOS) return `
+  <div class="info install">
+    <span>📲 Asenna sovellus: napauta Safarin <b>Jaa</b>-painiketta <span aria-hidden="true">(⬆️)</span> ja valitse <b>Lisää Koti-valikkoon</b>.</span>
+    <button class="icon" id="installX" aria-label="Piilota">✕</button>
+  </div>`;
+  return '';
+}
+function bindInstallCard() {
+  const ib = document.getElementById('installBtn');
+  if (ib) ib.onclick = async () => {
+    const p = installPrompt; if (!p) return;
+    p.prompt();
+    try { await p.userChoice; } catch (e) { /* peruttu */ }
+    installPrompt = null; render();
+  };
+  const x = document.getElementById('installX');
+  if (x) x.onclick = () => { try { localStorage.setItem('padel-install-dismissed', '1'); } catch (e) { /* ei tallennusta */ } render(); };
 }
 
 /* ---------- tulosten jakaminen (teksti WhatsAppiin, kuva) ---------- */
