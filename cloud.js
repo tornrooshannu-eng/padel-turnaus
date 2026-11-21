@@ -5,7 +5,7 @@
 //   groups/{porukkakoodi}/tournaments/{id}      turnaus (pisteet erillisessä scores-kartassa)
 //   groups/{porukkakoodi}/series|lists/{id}     vakioturnaukset, pelaajalistat
 //   groups/{porukkakoodi}/players/{nimi}        tallennetut pelaajat
-import { FIREBASE_CONFIG } from './cloud-config.js?v=7';
+import { FIREBASE_CONFIG } from './cloud-config.js?v=8';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const KEY = 'padel-cloud';
@@ -107,7 +107,10 @@ function schedulePush() {
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => { pushTimer = null; pushNow(); }, 250);
 }
-function onWriteError(e) { console.warn('Pilvitallennus:', e); setStatus('error', e.code || e.message); }
+function onWriteError(e) {
+  console.warn('Pilvitallennus:', e);
+  setStatus('error', e.code === 'permission-denied' ? 'ei oikeutta – vain ylläpitäjä voi poistaa' : (e.code || e.message));
+}
 
 function pushNow() {
   if (!group || !fb) return;
@@ -175,6 +178,7 @@ async function connect(mergeLocal) {
     try { dirty = !!localStorage.getItem('padel-cloud-dirty'); } catch (e) { /* */ }
     if (mergeLocal || dirty) { pushNow(); try { localStorage.removeItem('padel-cloud-dirty'); } catch (e) { /* */ } }   // tyhjä vertailukohta = kaikki paikalliset tiedot pilveen
     listen();
+    checkAdmin();
   } catch (e) {
     console.warn('Pilviyhteys:', e);
     setStatus(navigator.onLine ? 'error' : 'offline', e.code || e.message);
@@ -190,35 +194,76 @@ window.addEventListener('online', () => { if (group && (status === 'error' || st
 window.addEventListener('offline', () => { if (group) setStatus('offline'); });
 
 /* --- julkinen rajapinta app.js:lle --- */
+/* --- ylläpitäjä: vain ylläpitäjä voi poistaa valmiita turnauksia ja vakioturnauksia ---
+   adminTokens/{gid}            { token }  (kukaan ei voi lukea; säännöt vertaavat siihen)
+   groups/{gid}/admins/{uid}    { token }  (luonti onnistuu vain oikealla tunnisteella) */
+let isAdmin = false, hasAdmin = false;
+async function checkAdmin() {
+  if (!group || !fb) return;
+  const { F, fs, auth } = fb;
+  try {
+    const [me, g] = await Promise.all([
+      F.getDoc(F.doc(fs, 'groups', group.id, 'admins', auth.currentUser.uid)),
+      F.getDoc(F.doc(fs, 'groups', group.id)),
+    ]);
+    isAdmin = me.exists(); hasAdmin = !!(g.exists() && g.data().hasAdmin);
+  } catch (e) { /* offline: pidetään edellinen tieto */ }
+  App.cloudChanged();
+}
+async function becomeAdmin(token) {
+  const { F, fs, auth } = fb;
+  await F.setDoc(F.doc(fs, 'groups', group.id, 'admins', auth.currentUser.uid), { token });
+  group = { ...group, adminToken: token }; storeGroup(group);
+  isAdmin = true; hasAdmin = true;
+  App.cloudChanged();
+}
+async function claimAdmin() {
+  await loadSdk(); await ensureAuth();
+  const { F, fs } = fb;
+  const token = newGroupId() + newGroupId();
+  try { await F.setDoc(F.doc(fs, 'adminTokens', group.id), { token }); }
+  catch (e) { throw new Error('Porukalla on jo ylläpitäjä. Pyydä häneltä ylläpitäjälinkki.'); }
+  await becomeAdmin(token);
+  await F.updateDoc(F.doc(fs, 'groups', group.id), { hasAdmin: true }).catch(() => {});
+}
+
 window.PadelCloud = {
   available: !!FIREBASE_CONFIG,
   get status() { return status; },
   get error() { return errorMsg; },
   get group() { return group; },
+  get isAdmin() { return isAdmin; },
+  get hasAdmin() { return hasAdmin; },
   inviteLink() { return group ? location.origin + location.pathname + '#liity=' + group.id : ''; },
+  adminLink() { return group && group.adminToken ? location.origin + location.pathname + '#liity=' + group.id + '&yp=' + group.adminToken : ''; },
   notifyLocalChange: schedulePush,
   async createGroup(name) {
     await loadSdk(); await ensureAuth();
     const id = newGroupId();
     await fb.F.setDoc(fb.F.doc(fb.fs, 'groups', id), { name, created: new Date().toISOString() });
     group = { id, name }; storeGroup(group);
+    await claimAdmin();
     await connect(true);
   },
-  async joinGroup(id) {
+  async joinGroup(id, adminToken) {
     await loadSdk(); await ensureAuth();
     const snap = await fb.F.getDoc(fb.F.doc(fb.fs, 'groups', id));
     if (!snap.exists()) throw new Error('Porukkaa ei löytynyt. Tarkista koodi tai linkki.');
     group = { id, name: snap.data().name || 'Porukka' }; storeGroup(group);
+    let badToken = false;
+    if (adminToken) { try { await becomeAdmin(adminToken); } catch (e) { badToken = true; } }
     await connect(true);
+    if (badToken) throw new Error('Liityit porukkaan jäsenenä, mutta ylläpitäjälinkki ei kelpaa.');
   },
+  claimAdmin,
   leave() {
-    disconnect(); group = null; storeGroup(null); setStatus('off');
+    disconnect(); group = null; isAdmin = false; hasAdmin = false; storeGroup(null); setStatus('off');
   },
 };
 
 if (FIREBASE_CONFIG) {
   if (group) connect(false);
-  const m = location.hash.match(/liity=([A-Za-z0-9]{20,})/);
-  if (m) { history.replaceState(null, '', location.pathname + location.search); App.offerJoin(m[1]); }
+  const m = location.hash.match(/liity=([A-Za-z0-9]{20,})(?:&yp=([A-Za-z0-9]{20,}))?/);
+  if (m) { history.replaceState(null, '', location.pathname + location.search); App.offerJoin(m[1], m[2]); }
 }
 App.cloudChanged();
