@@ -24,9 +24,12 @@ const defaultState = () => ({
   shownRound: 0,
   page: 'tournament',        // 'tournament' | 'history'
   historyOpen: null,
+  seriesId: null,            // valittu vakioturnaus
+  statsOpen: null,           // avoinna oleva tilastosivu
+  statsBack: 'tournament',
   schedule: null,            // Americano: koko ohjelma etukäteen
 });
-const defaultDb = () => ({ players: [], lists: [], history: [] });
+const defaultDb = () => ({ players: [], lists: [], history: [], series: [] });
 
 let state = load();
 let db = loadDb();
@@ -76,6 +79,7 @@ function syncHistory() {
       players: state.players.map(p => ({ id: p.id, name: p.name })),
       rounds: state.rounds,
       finished: finished(),
+      seriesId: state.seriesId || null,
     };
     const i = db.history.findIndex(h => h.id === state.tid);
     if (i >= 0) db.history[i] = entry; else db.history.unshift(entry);
@@ -291,7 +295,8 @@ document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => {
 
 function render() {
   document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('on', b.dataset.page === state.page));
-  if (state.page === 'history') renderHistory();
+  if (state.page === 'stats') renderStats();
+  else if (state.page === 'history') renderHistory();
   else if (state.phase === 'setup') renderSetup();
   else renderPlay();
 }
@@ -303,7 +308,29 @@ function renderSetup() {
   const byes = n - c * 4;
   const custom = !POINT_PRESETS.includes(state.points);
   const savable = db.players.length > 0;
+  const series = [...db.series].sort((a, b) => byName(a.name, b.name));
+  const cur = state.seriesId && seriesById(state.seriesId);
+  const changed = cur && (cur.players.length !== n || cur.players.some(name => !isSelected(name)));
   app.innerHTML = `
+  ${series.length ? `
+  <section class="card">
+    <h2>⭐ Vakioturnaukset</h2>
+    <div class="lists" style="margin:0">
+      ${series.map(s => `
+      <div class="listrow">
+        <button class="use ${cur === s ? 'on-series' : ''}" data-series="${s.id}">${esc(s.name)}
+          <span class="muted small">· ${s.players.length} pelaajaa · ${seriesTournaments(s.id).length} turnausta</span></button>
+        <button class="icon" data-stats="${s.id}" aria-label="Tilastot: ${esc(s.name)}" title="Tilastot">📊</button>
+      </div>`).join('')}
+    </div>
+    <p class="muted small" style="margin-bottom:0">Valinta tuo vakio-osallistujat, turnausmuodon ja pistemäärän. Pelaajia voi vielä muuttaa.</p>
+  </section>` : ''}
+  ${cur ? `
+  <div class="info series-banner">
+    <span>⭐ Vakioturnaus: <b>${esc(cur.name)}</b></span>
+    <button class="icon" id="clearSeries" aria-label="Poista vakioturnauksen valinta">✕</button>
+  </div>
+  ${changed ? '<button id="updateSeriesPlayers" class="small-btn">Tallenna nykyiset pelaajat vakio-osallistujiksi</button>' : ''}` : ''}
   <section class="card">
     <h2>Pelaajat (${n})</h2>
     <form id="addForm" class="row">
@@ -376,6 +403,15 @@ function renderSetup() {
   pick.onclick = openPicker;
   const sl = document.getElementById('saveListBtn');
   if (sl) sl.onclick = saveCurrentAsList;
+  app.querySelectorAll('[data-series]').forEach(b => b.onclick = () => { selectSeries(b.dataset.series); save(); render(); });
+  app.querySelectorAll('[data-stats]').forEach(b => b.onclick = () => openStats(b.dataset.stats, 'tournament'));
+  const cs = document.getElementById('clearSeries');
+  if (cs) cs.onclick = () => { state.seriesId = null; save(); render(); };
+  const usp = document.getElementById('updateSeriesPlayers');
+  if (usp) usp.onclick = () => {
+    if (!confirm(`Tallennetaanko nykyiset ${n} pelaajaa vakioturnauksen "${cur.name}" vakio-osallistujiksi?`)) return;
+    cur.players = state.players.map(p => p.name); saveDb(); render();
+  };
   app.querySelectorAll('[data-format]').forEach(b => b.onclick = () => { state.format = b.dataset.format; save(); render(); });
   app.querySelectorAll('[data-points]').forEach(b => b.onclick = () => {
     if (b.dataset.points === 'custom') { if (POINT_PRESETS.includes(state.points)) state.points = 20; }
@@ -514,7 +550,7 @@ function renderPicker(filter = '') {
 /* ---------- turnausnäkymä ---------- */
 function renderPlay() {
   const tabs = `
-    <p class="muted subtitle">${state.format === 'americano' ? 'Americano' : 'Mexicano'} · ${state.points} p · ${state.players.length} pelaajaa · ${activeCourts()} kenttä${activeCourts() === 1 ? '' : 'ä'}</p>
+    <p class="muted subtitle">${state.seriesId && seriesById(state.seriesId) ? `⭐ ${esc(seriesById(state.seriesId).name)} · ` : ''}${state.format === 'americano' ? 'Americano' : 'Mexicano'} · ${state.points} p · ${state.players.length} pelaajaa · ${activeCourts()} kenttä${activeCourts() === 1 ? '' : 'ä'}</p>
     <div class="tabs">
       <button data-view="matches" class="${state.view === 'matches' ? 'on' : ''}">Ottelut</button>
       <button data-view="table" class="${state.view === 'table' ? 'on' : ''}">Sarjataulukko</button>
@@ -532,7 +568,7 @@ function renderPlay() {
       : 'Aloitetaanko uusi turnaus? Keskeneräinen turnaus jää historiaan nykyisillä tuloksilla.';
     if (!confirm(msg)) return;
     state.phase = 'setup'; state.rounds = []; state.view = 'matches'; state.shownRound = 0;
-    state.roundsTarget = state.baseTarget = null; state.tid = null; state.startedAt = null; state.schedule = null;
+    state.roundsTarget = state.baseTarget = null; state.tid = null; state.startedAt = null; state.schedule = null; state.seriesId = null;
     save(); render(); window.scrollTo(0, 0);
   };
   if (state.view === 'matches') bindMatches();
@@ -573,6 +609,10 @@ function matchesHtml() {
         <div class="winner">🏆 ${esc(top[0].name)}</div>
         <div class="muted">${top[0].pts} pistettä${top[1] ? ` · 2. ${esc(top[1].name)} (${top[1].pts})` : ''}${top[2] ? ` · 3. ${esc(top[2].name)} (${top[2].pts})` : ''}</div>
       </div>
+      ${state.seriesId && seriesById(state.seriesId)
+        ? `<div class="info series-banner"><span>⭐ Tallennettu vakioturnaukseen <b>${esc(seriesById(state.seriesId).name)}</b></span></div>
+           <button id="seriesStatsBtn">📊 Vakioturnauksen tilastot</button>`
+        : '<button id="seriesSaveBtn">⭐ Tallenna vakioturnaukseksi</button>'}
       <button id="tableBtn" class="primary big">Näytä lopputulokset</button>
       <button id="nextBtn">Pelaa lisäkierros</button>`;
     } else {
@@ -619,6 +659,10 @@ function bindMatches() {
     if (finished()) state.roundsTarget = state.rounds.length + 1;
     addRound();
   };
+  const ssb = document.getElementById('seriesSaveBtn');
+  if (ssb) ssb.onclick = () => openSeriesDialog(state.tid);
+  const stb = document.getElementById('seriesStatsBtn');
+  if (stb) stb.onclick = () => openStats(state.seriesId, 'tournament');
   const tb = document.getElementById('tableBtn');
   if (tb) tb.onclick = () => { state.view = 'table'; save(); render(); window.scrollTo(0, 0); };
   const undo = document.getElementById('undoBtn');
@@ -698,13 +742,14 @@ function renderHistory() {
     <button class="hist card" data-open="${x.id}">
       <div class="top"><span>${esc(fmtDate(x.date))}</span>
         <span class="tag ${x.finished ? '' : 'open'}">${x.finished ? 'Valmis' : 'Kesken'}</span></div>
+      ${x.seriesId && seriesById(x.seriesId) ? `<div>⭐ ${esc(seriesById(x.seriesId).name)}</div>` : ''}
       <div class="muted">${x.format === 'americano' ? 'Americano' : 'Mexicano'} · ${x.points} p · ${x.players.length} pelaajaa · ${played}/${Math.max(x.roundsTarget || 0, x.rounds.length)} kierrosta</div>
       ${top && top.played ? `<div>${x.finished ? '🏆' : 'Johdossa:'} <b>${esc(top.name)}</b> (${top.pts} p)</div>` : ''}
     </button>`;
   }).join('') || '<p class="muted">Ei vielä tallennettuja turnauksia.</p>'}
   <section class="card">
     <h2>Varmuuskopio</h2>
-    <p class="muted small">Vie kaikki tiedot (pelaajat, listat ja historia) tiedostoon, tai tuo ne toiselle laitteelle.</p>
+    <p class="muted small">Vie kaikki tiedot (pelaajat, listat, vakioturnaukset ja historia) tiedostoon, tai tuo ne toiselle laitteelle.</p>
     <div class="btnrow">
       <button id="exportBtn">⬇ Vie tiedostoon</button>
       <button id="importBtn">⬆ Tuo tiedostosta</button>
@@ -722,12 +767,17 @@ function renderHistoryDetail(h) {
   const isCurrent = state.phase === 'play' && state.tid === h.id;
   const nm = id => esc(nameIn(h.players, id));
   const total = Math.max(h.roundsTarget || 0, h.rounds.length);
+  const hs = h.seriesId && seriesById(h.seriesId);
   app.innerHTML = `
   <div class="actions" style="margin:0 0 12px"><button id="backBtn">← Takaisin historiaan</button></div>
   <section class="card">
     <h2>${esc(fmtDate(h.date))} <span class="tag ${h.finished ? '' : 'open'}">${h.finished ? 'Valmis' : 'Kesken'}</span></h2>
     <p class="muted" style="margin:0">${h.format === 'americano' ? 'Americano' : 'Mexicano'} · ${h.points} p · ${h.courts} kenttä${h.courts === 1 ? '' : 'ä'}</p>
     <p style="margin:8px 0 0"><b>Osallistujat (${h.players.length}):</b> ${h.players.map(p => esc(p.name)).sort(byName).join(', ')}</p>
+    ${hs ? `
+    <div class="info series-banner" style="margin-top:10px"><span>⭐ Vakioturnaus: <b>${esc(hs.name)}</b></span></div>
+    <div class="btnrow"><button id="hStatsBtn">📊 Tilastot</button><button id="hUnlinkBtn">Irrota vakioturnauksesta</button></div>`
+    : '<div class="btnrow"><button id="hSeriesBtn">⭐ Tallenna vakioturnaukseksi</button></div>'}
   </section>
   ${tableHtml(h.players, h.rounds, h.points, total)}
   <section class="card">
@@ -746,6 +796,15 @@ function renderHistoryDetail(h) {
     <button id="delHistBtn" class="danger">Poista turnaus historiasta</button>
   </div>`;
   document.getElementById('backBtn').onclick = () => { state.historyOpen = null; save(); render(); };
+  const hsb = document.getElementById('hSeriesBtn');
+  if (hsb) hsb.onclick = () => openSeriesDialog(h.id);
+  const hst = document.getElementById('hStatsBtn');
+  if (hst) hst.onclick = () => openStats(hs.id, 'history');
+  const hun = document.getElementById('hUnlinkBtn');
+  if (hun) hun.onclick = () => {
+    if (!confirm(`Irrotetaanko turnaus vakioturnauksesta "${hs.name}"? Se ei enää näy sen tilastoissa.`)) return;
+    linkToSeries(h.id, null); render();
+  };
   const cont = document.getElementById('continueBtn');
   if (cont) cont.onclick = () => { state.page = 'tournament'; state.historyOpen = null; save(); render(); window.scrollTo(0, 0); };
   document.getElementById('delHistBtn').onclick = () => {
@@ -761,6 +820,177 @@ function renderHistoryDetail(h) {
     state.historyOpen = null;
     save(); render();
   };
+}
+
+/* ---------- vakioturnaukset ---------- */
+const seriesById = id => db.series.find(s => s.id === id);
+const seriesTournaments = id => db.history.filter(h => h.seriesId === id && h.finished)
+  .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+const fmtDay = iso => new Date(iso).toLocaleDateString('fi-FI', { day: 'numeric', month: 'numeric', year: 'numeric' });
+const fmtShort = iso => new Date(iso).toLocaleDateString('fi-FI', { day: 'numeric', month: 'numeric' });
+
+function openStats(id, back) {
+  state.statsOpen = id; state.statsBack = back || state.page; state.page = 'stats';
+  save(); render(); window.scrollTo(0, 0);
+}
+
+function linkToSeries(hid, sid) {
+  const h = db.history.find(x => x.id === hid);
+  if (h) h.seriesId = sid;
+  if (state.tid === hid) state.seriesId = sid;
+  save();
+}
+
+/* Valintaikkuna: tallenna turnaus uudeksi vakioturnaukseksi tai lisää olemassa olevaan. */
+function openSeriesDialog(hid) {
+  const h = db.history.find(x => x.id === hid);
+  if (!h) return;
+  const existing = [...db.series].sort((a, b) => byName(a.name, b.name));
+  picker.innerHTML = `
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="pickerTitle">Tallenna vakioturnaukseksi</h2>
+      <button class="icon" id="sdClose" aria-label="Sulje">✕</button>
+    </div>
+    <div class="dlg-body">
+      <p class="section-label">Uusi vakioturnaus</p>
+      <form id="sdForm" class="row">
+        <input id="sdName" class="grow" type="text" placeholder="Nimi, esim. Tiistain americano" maxlength="40" autocomplete="off" required>
+        <button class="primary" type="submit">Tallenna</button>
+      </form>
+      <p class="muted small">Vakio-osallistujiksi tallentuvat tämän turnauksen ${h.players.length} pelaajaa: ${h.players.map(p => esc(p.name)).sort(byName).join(', ')}.</p>
+      ${existing.length ? `
+      <p class="section-label" style="margin-top:16px">Tai lisää olemassa olevaan</p>
+      <div class="lists">
+        ${existing.map(s => `<button class="use" data-addto="${s.id}" style="text-align:left">${esc(s.name)} <span class="muted">(${seriesTournaments(s.id).length} turnausta)</span></button>`).join('')}
+      </div>` : ''}
+    </div>
+  </div>`;
+  if (typeof picker.showModal === 'function') picker.showModal(); else picker.setAttribute('open', '');
+  document.getElementById('sdClose').onclick = closePicker;
+  document.getElementById('sdForm').onsubmit = e => {
+    e.preventDefault();
+    const name = document.getElementById('sdName').value.trim().slice(0, 40);
+    if (!name) return;
+    if (db.series.some(s => same(s.name, name))) { alert(`Vakioturnaus "${name}" on jo olemassa. Valitse se listasta tai anna toinen nimi.`); return; }
+    const s = { id: newId(), name, players: h.players.map(p => p.name), format: h.format, points: h.points, created: new Date().toISOString() };
+    db.series.push(s);
+    linkToSeries(hid, s.id);
+    closePicker();
+  };
+  picker.querySelectorAll('[data-addto]').forEach(b => b.onclick = () => { linkToSeries(hid, b.dataset.addto); closePicker(); });
+  setTimeout(() => document.getElementById('sdName').focus(), 50);
+}
+
+/* Tilastot: sijoitus ja pisteet jokaisesta vakioturnauksen turnauksesta. */
+function seriesStats(sid) {
+  const tours = seriesTournaments(sid).map(h => {
+    const rows = computeStandings(h.players, h.rounds, h.points);
+    return { h, rows, byName: new Map(rows.map((r, i) => [r.name.toLocaleLowerCase('fi'), { ...r, place: i + 1, of: rows.length }])) };
+  });
+  const players = new Map();
+  for (const t of tours) for (const [key, r] of t.byName) {
+    if (!players.has(key)) players.set(key, { name: r.name, n: 0, wins: 0, podiums: 0, placeSum: 0, best: Infinity, pts: 0, games: 0, w: 0 });
+    const p = players.get(key);
+    p.n++; p.placeSum += r.place; p.best = Math.min(p.best, r.place);
+    if (r.place === 1) p.wins++;
+    if (r.place <= 3) p.podiums++;
+    p.pts += r.pts; p.games += r.played; p.w += r.w;
+  }
+  const summary = [...players.entries()].map(([key, p]) => ({ key, ...p, avg: p.placeSum / p.n }))
+    .sort((a, b) => b.wins - a.wins || a.avg - b.avg || b.n - a.n || byName(a.name, b.name));
+  return { tours, summary };
+}
+
+function renderStats() {
+  const s = seriesById(state.statsOpen);
+  if (!s) { state.page = state.statsBack || 'tournament'; return render(); }
+  const { tours, summary } = seriesStats(s.id);
+  const medal = p => p === 1 ? 'r1' : p === 2 ? 'r2' : p === 3 ? 'r3' : '';
+  const fmt1 = x => x.toLocaleString('fi-FI', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  app.innerHTML = `
+  <div class="actions" style="margin:0 0 12px"><button id="backBtn">← Takaisin</button></div>
+  <section class="card">
+    <h2>📊 ${esc(s.name)}</h2>
+    <p class="muted" style="margin:0">${s.format === 'americano' ? 'Americano' : 'Mexicano'} · ${s.points} p · ${tours.length} pelattua turnausta${tours.length ? ` (${fmtDay(tours[0].h.date)}–${fmtDay(tours[tours.length - 1].h.date)})` : ''}</p>
+    <p style="margin:8px 0 0"><b>Vakio-osallistujat (${s.players.length}):</b> ${[...s.players].sort(byName).map(esc).join(', ')}</p>
+    <div class="btnrow">
+      <button id="playSeriesBtn" class="primary">▶ Uusi turnaus</button>
+      <button id="renameSeriesBtn">✏️ Nimeä</button>
+      <button id="delSeriesBtn" class="danger">🗑 Poista</button>
+    </div>
+  </section>
+  ${!tours.length ? '<section class="card"><p class="muted" style="margin:0">Ei vielä valmiita turnauksia. Tilastot täyttyvät, kun tämän vakioturnauksen turnauksia pelataan loppuun.</p></section>' : `
+  <section class="card">
+    <h2>Kokonaistilanne</h2>
+    <div class="scroll-x">
+    <table class="stats">
+      <thead><tr><th>#</th><th>Pelaaja</th><th title="Osallistumiset">Turn.</th><th title="Turnausvoitot">🏆</th><th title="Mitalisijat">Top 3</th><th title="Keskimääräinen sijoitus">Ka. sija</th><th title="Paras sijoitus">Paras</th><th title="Pisteitä per ottelu">P/ott.</th><th title="Ottelujen voittoprosentti">V-%</th></tr></thead>
+      <tbody>${summary.map((p, i) => `<tr>
+        <td>${i + 1}</td><td>${esc(p.name)}</td><td>${p.n}</td><td class="pts">${p.wins}</td><td>${p.podiums}</td>
+        <td>${fmt1(p.avg)}</td><td>${p.best}.</td><td>${p.games ? fmt1(p.pts / p.games) : '–'}</td><td>${p.games ? Math.round(100 * p.w / p.games) : 0} %</td></tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Järjestys: turnausvoitot, keskimääräinen sijoitus. P/ott. = pisteitä ottelua kohden, V-% = voitettujen otteluiden osuus.</p>
+  </section>
+  <section class="card">
+    <h2>Sijoitukset päivämäärittäin</h2>
+    <div class="scroll-x">
+    <table class="matrix">
+      <thead><tr><th>Pelaaja</th>${tours.map(t => `<th>${fmtShort(t.h.date)}</th>`).join('')}</tr></thead>
+      <tbody>${summary.map(p => `<tr><td>${esc(p.name)}</td>${tours.map(t => {
+        const r = t.byName.get(p.key);
+        return r ? `<td><span class="rank ${medal(r.place)}">${r.place}</span><div class="small muted">${r.pts}</div></td>` : '<td class="muted">–</td>';
+      }).join('')}</tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Ylempi luku on sijoitus, alempi turnauksen kokonaispisteet. – = ei osallistunut.</p>
+  </section>
+  <section class="card">
+    <h2>Lopputulokset</h2>
+    ${[...tours].reverse().map(t => `
+    <button class="hist" data-openh="${t.h.id}" style="border:1px solid var(--line)">
+      <div class="top"><span>${esc(fmtDate(t.h.date))}</span><span class="tag">${t.rows.length} pelaajaa</span></div>
+      <div>🏆 <b>${esc(t.rows[0].name)}</b> (${t.rows[0].pts} p)</div>
+      <div class="muted small">${t.rows.map((r, i) => `${i + 1}. ${esc(r.name)} ${r.pts}`).join(' · ')}</div>
+    </button>`).join('')}
+  </section>`}`;
+  document.getElementById('backBtn').onclick = () => { state.page = state.statsBack || 'tournament'; state.statsOpen = null; save(); render(); window.scrollTo(0, 0); };
+  document.getElementById('playSeriesBtn').onclick = () => {
+    if (state.phase === 'play' && !finished() && !confirm('Toinen turnaus on kesken. Jätetäänkö se historiaan ja aloitetaan uusi?')) return;
+    if (state.phase === 'play') { state.phase = 'setup'; state.rounds = []; state.tid = null; state.startedAt = null; state.schedule = null; state.roundsTarget = state.baseTarget = null; state.view = 'matches'; state.shownRound = 0; }
+    selectSeries(s.id);
+    state.page = 'tournament'; state.statsOpen = null;
+    save(); render(); window.scrollTo(0, 0);
+  };
+  document.getElementById('renameSeriesBtn').onclick = () => {
+    const name = (prompt('Vakioturnauksen nimi:', s.name) || '').trim().slice(0, 40);
+    if (!name || name === s.name) return;
+    if (db.series.some(x => x !== s && same(x.name, name))) { alert('Tällä nimellä on jo vakioturnaus.'); return; }
+    s.name = name; saveDb(); render();
+  };
+  document.getElementById('delSeriesBtn').onclick = () => {
+    if (!confirm(`Poistetaanko vakioturnaus "${s.name}"? Turnaukset säilyvät historiassa, mutta niitä ei enää koota tähän tilastoon.`)) return;
+    db.series = db.series.filter(x => x !== s);
+    db.history.forEach(h => { if (h.seriesId === s.id) h.seriesId = null; });
+    if (state.seriesId === s.id) state.seriesId = null;
+    state.page = state.statsBack === 'stats' ? 'tournament' : (state.statsBack || 'tournament'); state.statsOpen = null;
+    save(); render();
+  };
+  app.querySelectorAll('[data-openh]').forEach(b => b.onclick = () => {
+    state.page = 'history'; state.historyOpen = b.dataset.openh; save(); render(); window.scrollTo(0, 0);
+  });
+}
+
+function selectSeries(id) {
+  const s = seriesById(id); if (!s) return;
+  state.seriesId = s.id;
+  state.players = s.players.map(name => ({ id: state.nextId++, name }));
+  s.players.forEach(rememberPlayer);
+  state.format = s.format || state.format;
+  state.points = s.points || state.points;
 }
 
 function exportDb() {
@@ -786,6 +1016,10 @@ function importDb(file) {
       if (!l || !l.name || !Array.isArray(l.players)) return;
       const ex = db.lists.find(x => same(x.name, l.name));
       if (ex) ex.players = l.players; else db.lists.push({ id: l.id || newId(), name: l.name, players: l.players });
+    });
+    (Array.isArray(d.series) ? d.series : []).forEach(s => {
+      if (!s || !s.id || !s.name || !Array.isArray(s.players)) return;
+      if (!db.series.some(x => x.id === s.id)) db.series.push(s);
     });
     d.history.forEach(h => {
       if (!h || !h.id || !Array.isArray(h.players) || !Array.isArray(h.rounds)) return;
