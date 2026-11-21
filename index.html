@@ -3,8 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f766e">
+<meta name="theme-color" content="#1849b8">
 <title>Padel-turnaus</title>
+<script>
+  // Teema ennen piirtoa (ei välähdystä): tallennettu valinta, muuten laitteen asetus.
+  (function () {
+    var t;
+    try { t = localStorage.getItem('padel-theme'); } catch (e) {}
+    if (t !== 'light' && t !== 'dark') t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,6 +23,10 @@
     <button data-page="tournament">Turnaus</button>
     <button data-page="history">Historia</button>
   </nav>
+  <label class="theme-switch" title="Vaihda vaalea / tumma tila">
+    <input type="checkbox" id="themeToggle" role="switch" aria-label="Tumma tila">
+    <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+  </label>
 </header>
 <main id="app"></main>
 <dialog id="picker" aria-labelledby="pickerTitle"></dialog>

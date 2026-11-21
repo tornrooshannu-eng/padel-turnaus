@@ -268,6 +268,21 @@ const app = document.getElementById('app');
 const picker = document.getElementById('picker');
 let setupError = '';
 
+/* ---------- teema (vaalea / tumma), liukukytkin yläkulmassa ---------- */
+const themeToggle = document.getElementById('themeToggle');
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  themeToggle.checked = t === 'dark';
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', t === 'dark' ? '#0d0d10' : '#1849b8');
+}
+applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
+themeToggle.addEventListener('change', () => {
+  const t = themeToggle.checked ? 'dark' : 'light';
+  applyTheme(t);
+  try { localStorage.setItem('padel-theme', t); } catch (e) { /* ei tallennusta */ }
+});
+
 document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => {
   state.page = b.dataset.page;
   if (state.page === 'history') state.historyOpen = null;
