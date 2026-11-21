@@ -613,7 +613,8 @@ function matchesHtml() {
         ? `<div class="info series-banner"><span>⭐ Tallennettu vakioturnaukseen <b>${esc(seriesById(state.seriesId).name)}</b></span></div>
            <button id="seriesStatsBtn">📊 Vakioturnauksen tilastot</button>`
         : '<button id="seriesSaveBtn">⭐ Tallenna vakioturnaukseksi</button>'}
-      <button id="tableBtn" class="primary big">Näytä lopputulokset</button>
+      <button id="shareBtn" class="primary big">📤 Jaa tulokset</button>
+      <button id="tableBtn">Näytä lopputulokset</button>
       <button id="nextBtn">Pelaa lisäkierros</button>`;
     } else {
       actions = `<button id="nextBtn" class="primary big" ${complete ? '' : 'disabled'}>${complete ? 'Seuraava kierros →' : 'Syötä kaikki tulokset'}</button>`;
@@ -659,6 +660,8 @@ function bindMatches() {
     if (finished()) state.roundsTarget = state.rounds.length + 1;
     addRound();
   };
+  const shb = document.getElementById('shareBtn');
+  if (shb) shb.onclick = () => shareResults(state.tid);
   const ssb = document.getElementById('seriesSaveBtn');
   if (ssb) ssb.onclick = () => openSeriesDialog(state.tid);
   const stb = document.getElementById('seriesStatsBtn');
@@ -793,9 +796,12 @@ function renderHistoryDetail(h) {
   </section>
   <div class="actions">
     ${isCurrent ? '<button id="continueBtn" class="primary big">Jatka turnausta</button>' : ''}
+    ${h.rounds.some(r => r.matches.some(m => isScored(m, h.points))) ? `<button id="shareHistBtn" ${isCurrent ? '' : 'class="primary big"'}>📤 Jaa ${h.finished ? 'tulokset' : 'tilanne'}</button>` : ''}
     <button id="delHistBtn" class="danger">Poista turnaus historiasta</button>
   </div>`;
   document.getElementById('backBtn').onclick = () => { state.historyOpen = null; save(); render(); };
+  const shh = document.getElementById('shareHistBtn');
+  if (shh) shh.onclick = () => shareResults(h.id);
   const hsb = document.getElementById('hSeriesBtn');
   if (hsb) hsb.onclick = () => openSeriesDialog(h.id);
   const hst = document.getElementById('hStatsBtn');
@@ -916,6 +922,7 @@ function renderStats() {
     <p style="margin:8px 0 0"><b>Vakio-osallistujat (${s.players.length}):</b> ${[...s.players].sort(byName).map(esc).join(', ')}</p>
     <div class="btnrow">
       <button id="playSeriesBtn" class="primary">▶ Uusi turnaus</button>
+      ${tours.length ? '<button id="shareSeriesBtn">📤 Jaa tilastot</button>' : ''}
       <button id="renameSeriesBtn">✏️ Nimeä</button>
       <button id="delSeriesBtn" class="danger">🗑 Poista</button>
     </div>
@@ -965,6 +972,8 @@ function renderStats() {
     state.page = 'tournament'; state.statsOpen = null;
     save(); render(); window.scrollTo(0, 0);
   };
+  const shs = document.getElementById('shareSeriesBtn');
+  if (shs) shs.onclick = () => openShare('Jaa tilastot', seriesText(s.id), null, '');
   document.getElementById('renameSeriesBtn').onclick = () => {
     const name = (prompt('Vakioturnauksen nimi:', s.name) || '').trim().slice(0, 40);
     if (!name || name === s.name) return;
@@ -991,6 +1000,147 @@ function selectSeries(id) {
   s.players.forEach(rememberPlayer);
   state.format = s.format || state.format;
   state.points = s.points || state.points;
+}
+
+/* ---------- tulosten jakaminen (teksti WhatsAppiin, kuva) ---------- */
+const fmtName = f => f === 'americano' ? 'Americano' : 'Mexicano';
+const medalEmoji = i => ['🥇', '🥈', '🥉'][i] || `${i + 1}.`;
+const kpl = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function resultsText(h) {
+  const rows = computeStandings(h.players, h.rounds, h.points);
+  const played = h.rounds.filter(r => roundComplete(r, h.points)).length;
+  const s = h.seriesId && seriesById(h.seriesId);
+  const lines = [
+    `🎾 *${s ? s.name : 'Padel ' + fmtName(h.format)}* – ${fmtDay(h.date)}`,
+    `${fmtName(h.format)} · ${h.points} p · ${h.players.length} pelaajaa · ${kpl(played, 'kierros', 'kierrosta')}`,
+    h.finished ? '*Lopputulokset*' : `*Tilanne ${played}. kierroksen jälkeen*`,
+    '',
+    ...rows.map((r, i) => `${medalEmoji(i)} ${r.name} – ${r.pts} p (${r.w}/${r.played} V)`),
+  ];
+  return lines.join('\n');
+}
+
+function seriesText(sid) {
+  const s = seriesById(sid);
+  const { tours, summary } = seriesStats(sid);
+  const fmt1 = x => x.toLocaleString('fi-FI', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  const lines = [
+    `🎾 *${s.name}* – tilastot`,
+    `${kpl(tours.length, 'turnaus', 'turnausta')}${tours.length ? ` (${fmtDay(tours[0].h.date)}–${fmtDay(tours[tours.length - 1].h.date)})` : ''}`,
+    '',
+    ...summary.map((p, i) => `${medalEmoji(i)} ${p.name} – 🏆 ${p.wins} · ka. sija ${fmt1(p.avg)} · ${p.n} turn.`),
+  ];
+  if (tours.length) {
+    lines.push('', '*Voittajat*');
+    [...tours].reverse().forEach(t => lines.push(`${fmtShort(t.h.date)} ${t.rows[0].name} (${t.rows[0].pts} p)`));
+  }
+  return lines.join('\n');
+}
+
+/* Tulostaulukko kuvaksi (PNG), aina vaalealla sinisellä teemalla. */
+function resultsImage(h) {
+  const rows = computeStandings(h.players, h.rounds, h.points);
+  const played = h.rounds.filter(r => roundComplete(r, h.points)).length;
+  const s = h.seriesId && seriesById(h.seriesId);
+  const W = 1080, PAD = 64, HEAD = 280, ROW = 86, FOOT = 110;
+  const H = HEAD + rows.length * ROW + FOOT;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const font = (w, px) => `${w} ${px}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const fit = (text, max) => { let t = text; while (t.length > 1 && g.measureText(t).width > max) t = t.slice(0, -1); return t === text ? t : t.slice(0, -1) + '…'; };
+  g.fillStyle = '#eaf2fc'; g.fillRect(0, 0, W, H);
+  const grad = g.createLinearGradient(0, 0, W, HEAD);
+  grad.addColorStop(0, '#1849b8'); grad.addColorStop(.55, '#1d63e0'); grad.addColorStop(1, '#1393d8');
+  g.fillStyle = grad; g.fillRect(0, 0, W, HEAD - 40);
+  g.fillStyle = '#ffffff'; g.textBaseline = 'alphabetic';
+  g.font = font(800, 58); g.fillText(fit('🎾 ' + (s ? s.name : 'Padel ' + fmtName(h.format)), W - 2 * PAD), PAD, 104);
+  g.font = font(500, 34); g.fillText(fmtDate(h.date), PAD, 160);
+  g.font = font(600, 32); g.globalAlpha = .9;
+  g.fillText(h.finished ? 'Lopputulokset' : `Tilanne ${played}. kierroksen jälkeen`, PAD, 206); g.globalAlpha = 1;
+  // tulosrivit valkoisella kortilla
+  const top = HEAD - 10, cardH = rows.length * ROW + 20;
+  g.fillStyle = '#ffffff'; g.beginPath(); g.roundRect ? g.roundRect(PAD - 24, top - 10, W - 2 * PAD + 48, cardH, 28) : g.rect(PAD - 24, top - 10, W - 2 * PAD + 48, cardH); g.fill();
+  const medals = ['#d4a017', '#9aa3a8', '#b87333'];
+  rows.forEach((r, i) => {
+    const y = top + i * ROW;
+    if (i % 2 === 1) { g.fillStyle = '#f3f7fd'; g.fillRect(PAD - 24, y, W - 2 * PAD + 48, ROW); }
+    const cy = y + ROW / 2;
+    g.beginPath(); g.arc(PAD + 26, cy, 26, 0, Math.PI * 2);
+    g.fillStyle = i < 3 ? medals[i] : '#dbe8fc'; g.fill();
+    g.fillStyle = i < 3 && i !== 2 ? '#000000' : i === 2 ? '#ffffff' : '#12233d';
+    g.font = font(800, 28); g.textAlign = 'center'; g.fillText(String(i + 1), PAD + 26, cy + 10);
+    g.textAlign = 'left'; g.fillStyle = '#12233d'; g.font = font(i === 0 ? 800 : 600, 38);
+    g.fillText(fit(r.name, W - 2 * PAD - 420), PAD + 80, cy + 13);
+    g.textAlign = 'right'; g.font = font(800, 40); g.fillStyle = '#1d5fd1';
+    g.fillText(`${r.pts} p`, W - PAD, cy + 14);
+    g.font = font(500, 26); g.fillStyle = '#586a84';
+    g.fillText(`${r.w}/${r.played} V`, W - PAD - 150, cy + 10);
+    g.textAlign = 'left';
+  });
+  g.font = font(500, 28); g.fillStyle = '#586a84';
+  g.fillText(`${fmtName(h.format)} · ${h.points} p · ${h.players.length} pelaajaa · ${kpl(played, 'kierros', 'kierrosta')}`, PAD, H - 46);
+  return new Promise(res => c.toBlob(res, 'image/png'));
+}
+
+async function copyText(text, area) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* vara */ }
+  try { area.select(); return document.execCommand('copy'); } catch (e) { return false; }
+}
+
+function openShare(title, text, imageFn, fileBase) {
+  picker.innerHTML = `
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="pickerTitle">📤 ${esc(title)}</h2>
+      <button class="icon" id="shClose" aria-label="Sulje">✕</button>
+    </div>
+    <div class="dlg-body">
+      <textarea id="shText" class="share-text" readonly rows="10">${esc(text)}</textarea>
+      <div class="share-grid">
+        ${navigator.share ? '<button id="shNative" class="primary">📤 Jaa…</button>' : ''}
+        <button id="shWa">💬 WhatsApp</button>
+        <button id="shCopy">📋 Kopioi teksti</button>
+        ${imageFn ? '<button id="shImg">🖼 Jaa kuvana</button>' : ''}
+      </div>
+      <p id="shMsg" class="muted small" role="status"></p>
+      ${imageFn ? '<img id="shPreview" class="share-preview" alt="Tuloskuvan esikatselu">' : ''}
+    </div>
+  </div>`;
+  if (typeof picker.showModal === 'function') picker.showModal(); else picker.setAttribute('open', '');
+  const msg = t => { document.getElementById('shMsg').textContent = t; };
+  const area = document.getElementById('shText');
+  document.getElementById('shClose').onclick = closePicker;
+  const nat = document.getElementById('shNative');
+  if (nat) nat.onclick = async () => { try { await navigator.share({ text }); } catch (e) { /* peruttu */ } };
+  document.getElementById('shWa').onclick = () => window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
+  document.getElementById('shCopy').onclick = async () => msg(await copyText(text, area) ? '✓ Kopioitu leikepöydälle – liitä viestiin.' : 'Kopiointi ei onnistunut, valitse teksti käsin.');
+  if (!imageFn) return;
+  let blob = null;
+  imageFn().then(b => {
+    blob = b;
+    const img = document.getElementById('shPreview');
+    if (img && b) img.src = URL.createObjectURL(b);
+  });
+  document.getElementById('shImg').onclick = async () => {
+    if (!blob) return msg('Kuvaa luodaan vielä…');
+    const file = new File([blob], `${fileBase}.png`, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch (e) { /* peruttu */ }
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = file.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      msg('✓ Kuva ladattu – voit liittää sen viestiin.');
+    }
+  };
+}
+
+function shareResults(hid) {
+  const h = db.history.find(x => x.id === hid);
+  if (!h) return;
+  openShare(h.finished ? 'Jaa tulokset' : 'Jaa tilanne', resultsText(h), () => resultsImage(h), `padel-tulokset-${(h.date || '').slice(0, 10)}`);
 }
 
 function exportDb() {
