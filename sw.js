@@ -1,11 +1,13 @@
 /* Service worker: sovellus toimii myös ilman nettiyhteyttä.
    Muista nostaa VERSION ja index.html:n ?v= -tunnisteet jokaisessa julkaisussa. */
-const VERSION = 'v6';
+const VERSION = 'v7';
 const CACHE = 'padel-' + VERSION;
 const SHELL = [
   './',
-  'style.css?v=6',
-  'app.js?v=6',
+  'style.css?v=7',
+  'app.js?v=7',
+  'cloud.js?v=7',
+  'cloud-config.js?v=7',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -29,7 +31,17 @@ const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new E
 
 self.addEventListener('fetch', e => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  // Firebase-kirjastot (versioitu CDN): välimuistiin, jotta pilviyhteys toimii myös offline-käynnistyksessä
+  if (url.href.startsWith('https://www.gstatic.com/firebasejs/')) {
+    e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      return res;
+    })));
+    return;
+  }
+  if (url.origin !== self.location.origin) return;
 
   // Sivu: verkosta ensin (uusin versio), heikolla yhteydellä 4 s jälkeen välimuistista.
   if (req.mode === 'navigate') {

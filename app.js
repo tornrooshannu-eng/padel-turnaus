@@ -59,6 +59,12 @@ function migrate() {
 }
 function saveDb() {
   try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch (e) { /* ei tallennusta */ }
+  if (window.PadelCloud) window.PadelCloud.notifyLocalChange();
+}
+function stable(v) {
+  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  return JSON.stringify(v === undefined ? null : v);
 }
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ei tallennusta */ }
@@ -71,17 +77,23 @@ function syncHistory() {
     const entry = {
       id: state.tid,
       date: state.startedAt,
-      updated: new Date().toISOString(),
       format: state.format,
       points: state.points,
       courts: activeCourts(),
       roundsTarget: state.roundsTarget,
+      baseTarget: state.baseTarget,
+      schedule: state.schedule || null,
       players: state.players.map(p => ({ id: p.id, name: p.name })),
-      rounds: state.rounds,
+      rounds: state.rounds.map(r => ({ matches: r.matches.map(m => ({ court: m.court, a: m.a, b: m.b, sa: m.sa, sb: m.sb })), byes: r.byes })),
       finished: finished(),
       seriesId: state.seriesId || null,
     };
     const i = db.history.findIndex(h => h.id === state.tid);
+    const old = i >= 0 ? db.history[i] : null;
+    // aikaleima vaihtuu vain, kun sisältö oikeasti muuttuu (ei turhia pilvikirjoituksia)
+    const strip = h => { const { updated, ...rest } = h; return stable(rest); };
+    if (old && strip(old) === strip(entry)) { saveDb(); return; }
+    entry.updated = new Date().toISOString();
     if (i >= 0) db.history[i] = entry; else db.history.unshift(entry);
   }
   saveDb();
@@ -311,8 +323,14 @@ function renderSetup() {
   const series = [...db.series].sort((a, b) => byName(a.name, b.name));
   const cur = state.seriesId && seriesById(state.seriesId);
   const changed = cur && (cur.players.length !== n || cur.players.some(name => !isSelected(name)));
+  const live = cloudOn() ? liveTournaments() : [];
   app.innerHTML = `
   ${installCardHtml()}
+  ${live.map(h => `
+  <div class="info install live">
+    <span>🔴 <b>Käynnissä nyt:</b> ${esc(h.seriesId && seriesById(h.seriesId) ? seriesById(h.seriesId).name : fmtName(h.format))} · ${h.players.length} pelaajaa · kierros ${h.rounds.length}/${Math.max(h.roundsTarget || 0, h.rounds.length)}</span>
+    <button class="primary" data-joinlive="${h.id}">Liity</button>
+  </div>`).join('')}
   ${series.length ? `
   <section class="card">
     <h2>⭐ Vakioturnaukset</h2>
@@ -405,6 +423,7 @@ function renderSetup() {
   const sl = document.getElementById('saveListBtn');
   if (sl) sl.onclick = saveCurrentAsList;
   bindInstallCard();
+  app.querySelectorAll('[data-joinlive]').forEach(b => b.onclick = () => joinTournament(b.dataset.joinlive));
   app.querySelectorAll('[data-series]').forEach(b => b.onclick = () => { selectSeries(b.dataset.series); save(); render(); });
   app.querySelectorAll('[data-stats]').forEach(b => b.onclick = () => openStats(b.dataset.stats, 'tournament'));
   const cs = document.getElementById('clearSeries');
@@ -552,7 +571,7 @@ function renderPicker(filter = '') {
 /* ---------- turnausnäkymä ---------- */
 function renderPlay() {
   const tabs = `
-    <p class="muted subtitle">${state.seriesId && seriesById(state.seriesId) ? `⭐ ${esc(seriesById(state.seriesId).name)} · ` : ''}${state.format === 'americano' ? 'Americano' : 'Mexicano'} · ${state.points} p · ${state.players.length} pelaajaa · ${activeCourts()} kenttä${activeCourts() === 1 ? '' : 'ä'}</p>
+    <p class="muted subtitle">${cloudDotHtml()} ${state.seriesId && seriesById(state.seriesId) ? `⭐ ${esc(seriesById(state.seriesId).name)} · ` : ''}${state.format === 'americano' ? 'Americano' : 'Mexicano'} · ${state.points} p · ${state.players.length} pelaajaa · ${activeCourts()} kenttä${activeCourts() === 1 ? '' : 'ä'}</p>
     <div class="tabs">
       <button data-view="matches" class="${state.view === 'matches' ? 'on' : ''}">Ottelut</button>
       <button data-view="table" class="${state.view === 'table' ? 'on' : ''}">Sarjataulukko</button>
@@ -636,10 +655,11 @@ function matchesHtml() {
 
 function bindMatches() {
   const ri = Math.min(state.shownRound, state.rounds.length - 1);
-  const r = state.rounds[ri];
+  const cur = () => state.rounds[ri]; // haetaan aina tuoreena (pilvi voi korvata kierrokset)
   app.querySelectorAll('[data-round]').forEach(b => b.onclick = () => { state.shownRound = +b.dataset.round; save(); render(); });
   app.querySelectorAll('input[data-m]').forEach(inp => {
     inp.addEventListener('input', () => {
+      const r = cur(); if (!r) return;
       const m = r.matches[+inp.dataset.m];
       const side = inp.dataset.side, other = side === 'a' ? 'b' : 'a';
       const otherInp = app.querySelector(`input[data-m="${inp.dataset.m}"][data-side="${other}"]`);
@@ -672,6 +692,8 @@ function bindMatches() {
   if (tb) tb.onclick = () => { state.view = 'table'; save(); render(); window.scrollTo(0, 0); };
   const undo = document.getElementById('undoBtn');
   if (undo) undo.onclick = () => {
+    const r = cur();
+    if (!r || ri !== state.rounds.length - 1) return render();
     const hasScores = r.matches.some(m => Number.isInteger(m.sa));
     if (hasScores && !confirm(`Poistetaanko kierros ${ri + 1} tuloksineen?`)) return;
     state.rounds.pop();
@@ -738,8 +760,9 @@ function renderHistory() {
   app.innerHTML = `
   <section class="card">
     <h2>Turnaushistoria (${items.length})</h2>
-    <p class="muted small">Turnaukset ja tulokset tallentuvat tähän automaattisesti. Tiedot säilyvät tämän laitteen selaimessa.</p>
+    <p class="muted small">Turnaukset ja tulokset tallentuvat tähän automaattisesti. ${cloudOn() ? 'Tiedot jaetaan porukan kesken ja säilyvät myös tällä laitteella.' : 'Tiedot säilyvät tämän laitteen selaimessa.'}</p>
   </section>
+  ${cloudCardHtml()}
   ${items.map(x => {
     const top = computeStandings(x.players, x.rounds, x.points)[0];
     const played = x.rounds.filter(r => roundComplete(r, x.points)).length;
@@ -762,6 +785,7 @@ function renderHistory() {
     <input id="importFile" type="file" accept="application/json,.json" hidden>
   </section>`;
   app.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { state.historyOpen = b.dataset.open; save(); render(); window.scrollTo(0, 0); });
+  bindCloudCard();
   document.getElementById('exportBtn').onclick = exportDb;
   const file = document.getElementById('importFile');
   document.getElementById('importBtn').onclick = () => file.click();
@@ -798,10 +822,13 @@ function renderHistoryDetail(h) {
   </section>
   <div class="actions">
     ${isCurrent ? '<button id="continueBtn" class="primary big">Jatka turnausta</button>' : ''}
+    ${!isCurrent && !h.finished ? '<button id="joinBtn" class="primary big">▶ Liity turnaukseen ja syötä tuloksia</button>' : ''}
     ${h.rounds.some(r => r.matches.some(m => isScored(m, h.points))) ? `<button id="shareHistBtn" ${isCurrent ? '' : 'class="primary big"'}>📤 Jaa ${h.finished ? 'tulokset' : 'tilanne'}</button>` : ''}
     <button id="delHistBtn" class="danger">Poista turnaus historiasta</button>
   </div>`;
   document.getElementById('backBtn').onclick = () => { state.historyOpen = null; save(); render(); };
+  const jb = document.getElementById('joinBtn');
+  if (jb) jb.onclick = () => joinTournament(h.id);
   const shh = document.getElementById('shareHistBtn');
   if (shh) shh.onclick = () => shareResults(h.id);
   const hsb = document.getElementById('hSeriesBtn');
@@ -1002,6 +1029,159 @@ function selectSeries(id) {
   s.players.forEach(rememberPlayer);
   state.format = s.format || state.format;
   state.points = s.points || state.points;
+}
+
+/* ---------- pilvisynkronointi (cloud.js) ---------- */
+const roundsKey = rounds => stable((rounds || []).map(r => [r.byes, r.matches.map(m => [m.court, m.a, m.b, m.sa, m.sb])]));
+
+/* Toisella puhelimella tehdyt muutokset käynnissä olevaan turnaukseen. */
+function mergeCurrent() {
+  if (state.phase !== 'play' || !state.tid) return false;
+  const h = db.history.find(x => x.id === state.tid);
+  if (!h) return false;
+  if (roundsKey(h.rounds) === roundsKey(state.rounds) && h.roundsTarget === state.roundsTarget && (h.seriesId || null) === (state.seriesId || null)) return false;
+  const wasLast = state.shownRound >= state.rounds.length - 1;
+  state.rounds = h.rounds.map(r => ({ matches: r.matches.map(m => ({ court: m.court, a: m.a, b: m.b, sa: m.sa, sb: m.sb })), byes: r.byes }));
+  if (h.roundsTarget) state.roundsTarget = h.roundsTarget;
+  if (h.baseTarget) state.baseTarget = h.baseTarget;
+  if (h.schedule) state.schedule = h.schedule;
+  state.seriesId = h.seriesId || null;
+  if (wasLast || state.shownRound > state.rounds.length - 1) state.shownRound = state.rounds.length - 1;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* */ }
+  return true;
+}
+
+/* Päivitä näkymä keskeyttämättä kirjoittamista. */
+function softRender() {
+  if (picker.open) return; // valintaikkuna piirtää näkymän sulkeutuessaan
+  const ae = document.activeElement;
+  if (ae && ae.matches && ae.matches('input[data-m]') && state.page === 'tournament' && state.phase === 'play' && state.view === 'matches') {
+    const ri = Math.min(state.shownRound, state.rounds.length - 1);
+    const r = state.rounds[ri];
+    if (r) {
+      app.querySelectorAll('input[data-m]').forEach(inp => {
+        if (inp === ae) return;
+        const m = r.matches[+inp.dataset.m]; if (!m) return;
+        const v = inp.dataset.side === 'a' ? m.sa : m.sb;
+        inp.value = Number.isInteger(v) ? v : '';
+      });
+      refreshRoundStatus(r, ri);
+    }
+    ae.addEventListener('blur', () => setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input')) render(); }, 0), { once: true });
+    return;
+  }
+  if (ae && ae.matches && ae.matches('input[type=text], input[type=number], textarea')) return;
+  render();
+}
+
+window.PadelApp = {
+  getDb: () => db,
+  applyRemote(kind, items) {
+    if (kind === 'tournaments' && state.phase === 'play' && state.tid &&
+        db.history.some(h => h.id === state.tid) && !items.some(h => h.id === state.tid)) {
+      // käynnissä oleva turnaus poistettiin toisella laitteella: lopetetaan se täälläkin
+      Object.assign(state, { phase: 'setup', rounds: [], tid: null, startedAt: null, schedule: null,
+        roundsTarget: null, baseTarget: null, view: 'matches', shownRound: 0, seriesId: null });
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* */ }
+    }
+    if (kind === 'tournaments') db.history = items;
+    else db[kind] = items;
+    try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch (e) { /* */ }
+    if (kind === 'tournaments') mergeCurrent();
+    if (state.seriesId && kind === 'series' && !seriesById(state.seriesId)) state.seriesId = null;
+    softRender();
+  },
+  cloudChanged() {
+    if (state.page === 'history' || (state.page === 'tournament' && state.phase === 'setup')) softRender();
+    else if (state.page === 'tournament' && state.phase === 'play') {
+      const el = document.getElementById('cloudDot'); if (el) el.outerHTML = cloudDotHtml();
+    }
+  },
+  offerJoin(gid) {
+    setTimeout(async () => {
+      if (!confirm('Liitytäänkö porukkaan? Tämän puhelimen tallennetut tiedot yhdistetään porukan yhteisiin tietoihin.')) return;
+      try { await window.PadelCloud.joinGroup(gid); state.page = 'history'; state.historyOpen = null; save(); render(); }
+      catch (e) { alert(e.message || 'Liittyminen ei onnistunut.'); }
+    }, 300);
+  },
+};
+
+const cloudOn = () => !!(window.PadelCloud && window.PadelCloud.group);
+function cloudDotHtml() {
+  if (!cloudOn()) return '<span id="cloudDot"></span>';
+  const s = window.PadelCloud.status;
+  const t = s === 'online' ? '☁️ live' : s === 'connecting' ? '☁️ yhdistetään…' : s === 'offline' ? '☁️ ei yhteyttä' : '☁️ virhe';
+  return `<span id="cloudDot" class="cloud-dot ${s}">${t}</span>`;
+}
+
+/* Liity käynnissä olevaan turnaukseen (esim. toiselta puhelimelta aloitettu). */
+function joinTournament(hid) {
+  const h = db.history.find(x => x.id === hid);
+  if (!h) return;
+  if (state.phase === 'play' && state.tid !== hid && !finished() &&
+      !confirm('Tällä puhelimella on kesken toinen turnaus. Se jää historiaan. Jatketaanko?')) return;
+  Object.assign(state, {
+    phase: 'play', format: h.format, points: h.points,
+    players: h.players.map(p => ({ id: p.id, name: p.name })),
+    rounds: h.rounds.map(r => ({ matches: r.matches.map(m => ({ court: m.court, a: m.a, b: m.b, sa: m.sa, sb: m.sb })), byes: r.byes })),
+    roundsTarget: h.roundsTarget || h.rounds.length, baseTarget: h.baseTarget || h.roundsTarget || h.rounds.length,
+    schedule: h.schedule || null, tid: h.id, startedAt: h.date, seriesId: h.seriesId || null,
+    nextId: Math.max(0, ...h.players.map(p => p.id)) + 1,
+    view: 'matches', shownRound: h.rounds.length - 1, page: 'tournament', historyOpen: null,
+  });
+  save(); render(); window.scrollTo(0, 0);
+}
+const liveTournaments = () => db.history.filter(h => !h.finished && h.id !== state.tid &&
+  h.updated && Date.now() - new Date(h.updated).getTime() < 12 * 3600 * 1000);
+
+function cloudCardHtml() {
+  const C = window.PadelCloud;
+  if (!C || !C.available) return '';
+  if (!C.group) return `
+  <section class="card">
+    <h2>☁️ Yhteiset tiedot porukan kanssa</h2>
+    <p class="muted small">Tallenna turnaukset pilveen, niin koko porukka näkee historian, vakioturnaukset ja tilastot. Käynnissä olevan turnauksen tulokset päivittyvät kaikkien puhelimiin livenä.</p>
+    <div class="btnrow"><button id="cloudCreate" class="primary">Luo porukka</button><button id="cloudJoin">Liity porukkaan</button></div>
+  </section>`;
+  const s = C.status;
+  const txt = s === 'online' ? '🟢 Yhdistetty – muutokset päivittyvät kaikille'
+    : s === 'connecting' ? '🟡 Yhdistetään…'
+    : s === 'offline' ? '🟡 Ei verkkoyhteyttä – muutokset tallentuvat ja lähetetään, kun yhteys palaa'
+    : `🔴 Yhteysvirhe${C.error ? ` (${esc(C.error)})` : ''}`;
+  return `
+  <section class="card">
+    <h2>☁️ Porukka: ${esc(C.group.name)}</h2>
+    <p class="small" style="margin:0">${txt}</p>
+    <div class="btnrow"><button id="cloudInvite" class="primary">📤 Kutsu porukkaan</button><button id="cloudLeave">Poistu</button></div>
+  </section>`;
+}
+function bindCloudCard() {
+  const C = window.PadelCloud;
+  const run = async (fn, okMsg) => {
+    try { await fn(); if (okMsg) alert(okMsg); } catch (e) { alert((e && e.message) || 'Toiminto ei onnistunut.'); }
+    render();
+  };
+  const cc = document.getElementById('cloudCreate');
+  if (cc) cc.onclick = () => {
+    const name = (prompt('Porukan nimi (esim. "Tiistain padel-porukka"):', '') || '').trim().slice(0, 40);
+    if (name) run(() => C.createGroup(name), `Porukka "${name}" luotu ja tämän puhelimen tiedot tallennettu pilveen. Kutsu muut "Kutsu porukkaan" -painikkeella.`);
+  };
+  const cj = document.getElementById('cloudJoin');
+  if (cj) cj.onclick = () => {
+    const v = (prompt('Liitä kutsulinkki tai porukkakoodi:', '') || '').trim();
+    const m = v.match(/([A-Za-z0-9]{20,})\s*$/);
+    if (!v) return;
+    if (!m) { alert('Koodi ei kelpaa. Liitä koko kutsulinkki.'); return; }
+    run(() => C.joinGroup(m[1]), 'Liityit porukkaan. Tämän puhelimen tiedot yhdistettiin porukan tietoihin.');
+  };
+  const ci = document.getElementById('cloudInvite');
+  if (ci) ci.onclick = () => openShare('Kutsu porukkaan',
+    `🎾 Liity padel-porukkaan "${C.group.name}"!\nAvaa linkki puhelimella, niin näet turnaukset, tilastot ja live-tulokset:\n${C.inviteLink()}`, null, '');
+  const cl = document.getElementById('cloudLeave');
+  if (cl) cl.onclick = () => {
+    if (!confirm('Poistutaanko porukasta? Tiedot jäävät tähän puhelimeen, mutta eivät enää päivity muiden kanssa.')) return;
+    C.leave(); render();
+  };
 }
 
 /* ---------- asennettava sovellus (PWA) ---------- */
