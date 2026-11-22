@@ -5,7 +5,7 @@
 //   groups/{porukkakoodi}/tournaments/{id}      turnaus (pisteet erillisessä scores-kartassa)
 //   groups/{porukkakoodi}/series|lists/{id}     vakioturnaukset, pelaajalistat
 //   groups/{porukkakoodi}/players/{nimi}        tallennetut pelaajat
-import { FIREBASE_CONFIG } from './cloud-config.js?v=9';
+import { FIREBASE_CONFIG } from './cloud-config.js?v=10';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const KEY = 'padel-cloud';
@@ -55,7 +55,9 @@ function toForm(kind, obj) {
   const rounds = (obj.rounds || []).map((r, ri) => ({
     byes: r.byes || [],
     matches: r.matches.map((m, mi) => {
-      if (Number.isInteger(m.sa) && Number.isInteger(m.sb)) scores[`r${ri}m${mi}`] = { sa: m.sa, sb: m.sb };
+      // tennis: pisteloki (log) kulkee samassa kentässä, jolloin yksittäinen piste on yksi kenttäpäivitys
+      if (Number.isInteger(m.sa) && Number.isInteger(m.sb)) scores[`r${ri}m${mi}`] = m.log ? { sa: m.sa, sb: m.sb, log: m.log } : { sa: m.sa, sb: m.sb };
+      else if (m.log) scores[`r${ri}m${mi}`] = { log: m.log };
       return { court: m.court, a: m.a, b: m.b };
     }),
   }));
@@ -68,7 +70,9 @@ function fromForm(kind, data) {
   rest.rounds = (rest.rounds || []).map((r, ri) => ({
     matches: (r.matches || []).map((m, mi) => {
       const s = scores[`r${ri}m${mi}`];
-      return { court: m.court, a: m.a, b: m.b, sa: s ? s.sa : null, sb: s ? s.sb : null };
+      const o = { court: m.court, a: m.a, b: m.b, sa: s && Number.isInteger(s.sa) ? s.sa : null, sb: s && Number.isInteger(s.sb) ? s.sb : null };
+      if (s && s.log) o.log = s.log;
+      return o;
     }),
     byes: r.byes || [],
   }));

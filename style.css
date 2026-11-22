@@ -257,3 +257,34 @@ table.matrix .small { line-height: 1.1; margin-top: 2px; }
 .badge .bi { font-size: 1.7rem; line-height: 1.2; }
 .badge .bt { font-size: .8rem; font-weight: 700; }
 .badge .bd { font-size: .68rem; color: var(--muted); line-height: 1.25; }
+
+/* ---------- tennisottelu: tulostaulu ja pistelaskuri ---------- */
+.tboard { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.trow { display: flex; align-items: center; gap: 4px; padding: 8px 0 8px 10px; }
+.trow + .trow { border-top: 1px solid var(--line); }
+.trow .names { flex: 1; font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.trow.win .names { color: var(--accent); font-weight: 700; }
+.tset { width: 26px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); position: relative; }
+.tset.cur { color: var(--text); }
+.tset sup { font-size: .62em; position: absolute; top: -.35em; right: -1px; }
+.tpt { width: 56px; align-self: stretch; display: flex; align-items: center; justify-content: center; margin: -8px 0;
+  background: var(--accent-soft); font-size: 1.3rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tstatus { font-size: .85rem; color: var(--muted); margin: 8px 2px; text-align: center; }
+.tstatus.gold { color: var(--open-fg); background: var(--open-bg); border-radius: 8px; padding: 4px 8px; font-weight: 600; }
+.tbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tpoint { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 8px; min-height: 76px;
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent); touch-action: manipulation; }
+.tpoint:active { filter: brightness(.88); }
+.tpoint .plus { font-size: 1.5rem; font-weight: 800; line-height: 1; }
+.tpoint .who { font-size: .82rem; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tfoot { display: flex; gap: 8px; margin-top: 8px; }
+.tfoot button { flex: 1; font-size: .88rem; padding: 8px 6px; }
+.setgrid { width: 100%; border-collapse: collapse; }
+.setgrid th { font-size: .8rem; color: var(--muted); font-weight: 600; padding: 4px; }
+.setgrid td { padding: 4px; }
+.setgrid td.names { font-weight: 500; font-size: .92rem; }
+.setgrid input { width: 56px; text-align: center; font-size: 1.1rem; font-weight: 600; padding: 8px 4px; }
+.final-res { font-size: 1.05rem; }
+.final-res b { color: var(--accent); }
+.hist-final { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); font-size: .92rem; }
+.hist-final b { color: var(--accent); }
