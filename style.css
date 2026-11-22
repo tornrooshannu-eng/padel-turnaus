@@ -245,3 +245,15 @@ table.matrix .small { line-height: 1.1; margin-top: 2px; }
 .chart .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .chart .endlabel { fill: var(--text); font-size: 13px; font-weight: 700; }
 .chart .tip { position: absolute; transform: translate(-50%, -100%); background: var(--text); color: var(--card); font-size: .8rem; padding: 4px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none; }
+
+/* ---------- ennätykset ja saavutukset ---------- */
+.badges { font-size: .85rem; letter-spacing: 1px; white-space: nowrap; }
+.recs { display: grid; gap: 8px; }
+.rec { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; background: var(--input); border: 1px solid var(--line); border-radius: 12px; }
+.rec-i { font-size: 1.6rem; line-height: 1; }
+.badge-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.badge { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; padding: 10px 6px; border-radius: 12px; border: 1px dashed var(--line); opacity: .45; filter: grayscale(1); }
+.badge.got { opacity: 1; filter: none; border-style: solid; border-color: var(--accent); background: var(--accent-soft); }
+.badge .bi { font-size: 1.7rem; line-height: 1.2; }
+.badge .bt { font-size: .8rem; font-weight: 700; }
+.badge .bd { font-size: .68rem; color: var(--muted); line-height: 1.25; }

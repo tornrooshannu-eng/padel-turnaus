@@ -5,7 +5,7 @@
 //   groups/{porukkakoodi}/tournaments/{id}      turnaus (pisteet erillisessä scores-kartassa)
 //   groups/{porukkakoodi}/series|lists/{id}     vakioturnaukset, pelaajalistat
 //   groups/{porukkakoodi}/players/{nimi}        tallennetut pelaajat
-import { FIREBASE_CONFIG } from './cloud-config.js?v=8';
+import { FIREBASE_CONFIG } from './cloud-config.js?v=9';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const KEY = 'padel-cloud';

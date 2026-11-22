@@ -1004,6 +1004,7 @@ function renderStats() {
       <tbody>${rows.map((p, i) => `<tr><td><span class="rank ${i < 3 ? 'r' + (i + 1) : ''}">${i + 1}</span></td><td>${playerLink(p.name)}</td><td class="pts">${p.sp}</td><td>${p.n}</td><td>${p.wins}</td></tr>`).join('')}</tbody>
     </table>
     <p class="muted small">Pisteet sijoituksen mukaan jokaisesta turnauksesta: ${SEASON_POINTS.map((p, i) => `${i + 1}. ${p}`).join(', ')}, muut 1 piste.</p>
+    <button class="primary big" data-seasonshare="${yr}">🎉 Kauden ${yr} yhteenveto</button>
   </section>`;
   })()}
   <section class="card">
@@ -1038,6 +1039,10 @@ function renderStats() {
     save(); render(); window.scrollTo(0, 0);
   };
   app.querySelectorAll('[data-season]').forEach(b => b.onclick = () => { state.seasonYear = b.dataset.season; save(); render(); });
+  app.querySelectorAll('[data-seasonshare]').forEach(b => b.onclick = () => {
+    const S = seasonSummary(s.id, b.dataset.seasonshare); if (!S) return;
+    openShare(`Kauden ${S.year} yhteenveto`, seasonText(S), () => seasonImage(S), `kausi-${S.year}-${S.s.name.replace(/[^a-z0-9äöå]+/gi, '-')}`);
+  });
   const shs = document.getElementById('shareSeriesBtn');
   if (shs) shs.onclick = () => openShare('Jaa tilastot', seriesText(s.id), null, '');
   document.getElementById('renameSeriesBtn').onclick = () => {
@@ -1364,6 +1369,7 @@ app.addEventListener('click', e => {
 
 function renderPlayers() {
   const ratings = computeRatings();
+  const ach = computeAchievements();
   const list = [...ratings.values()].sort((a, b) => b.r - a.r || byName(a.name, b.name));
   const toursBy = new Map();
   for (const h of finishedTours()) h.players.forEach(p => toursBy.set(nameKey(p.name), (toursBy.get(nameKey(p.name)) || 0) + 1));
@@ -1374,9 +1380,10 @@ function renderPlayers() {
     ${list.length ? `
     <table class="stats">
       <thead><tr><th>#</th><th>Pelaaja</th><th>Ranking</th><th title="Ottelut">O</th><th title="Turnaukset">Turn.</th></tr></thead>
-      <tbody>${list.map((p, i) => `<tr><td>${i + 1}</td><td>${playerLink(p.name)}</td><td class="pts">${Math.round(p.r)}</td><td>${p.games}</td><td>${toursBy.get(p.key) || 0}</td></tr>`).join('')}</tbody>
+      <tbody>${list.map((p, i) => `<tr><td>${i + 1}</td><td>${playerLink(p.name)}${badgeIcons(ach, p.name)}</td><td class="pts">${Math.round(p.r)}</td><td>${p.games}</td><td>${toursBy.get(p.key) || 0}</td></tr>`).join('')}</tbody>
     </table>` : '<p class="muted" style="margin:0">Ei vielä pelattuja turnauksia.</p>'}
-  </section>`;
+  </section>
+  ${recordsHtml(ach)}`;
 }
 
 /* Viivakaavio (yksi sarja): SVG, kosketus/hover näyttää arvon. */
@@ -1463,6 +1470,7 @@ function renderPlayer() {
       ${seriesIds.map(id => `<button data-pfilter="${id}" class="${filter === id ? 'on' : ''}">${esc(seriesById(id).name)}</button>`).join('')}
     </div>` : ''}
   </section>
+  ${badgesHtml(computeAchievements(), key)}
   ${nT ? `
   <section class="card">
     <h2>Parhaat kumppanit ja vastustajat</h2>
@@ -1501,6 +1509,244 @@ function renderPlayer() {
   app.querySelectorAll('[data-pfilter]').forEach(b => b.onclick = () => { state.playerFilter = b.dataset.pfilter || null; save(); render(); });
   app.querySelectorAll('[data-openh]').forEach(b => b.onclick = () => { state.page = 'history'; state.historyOpen = b.dataset.openh; save(); render(); window.scrollTo(0, 0); });
   bindCharts();
+}
+
+/* ---------- ennätykset ja saavutukset ---------- */
+/* Kaikki pelatut ottelut aikajärjestyksessä nimien kera. */
+function allMatches(tours) {
+  const out = [];
+  for (const h of tours) h.rounds.forEach((r, ri) => r.matches.forEach(m => {
+    if (!isScored(m, h.points)) return;
+    out.push({ h, ri, A: m.a.map(id => nameIn(h.players, id)), B: m.b.map(id => nameIn(h.players, id)), sa: m.sa, sb: m.sb });
+  }));
+  return out;
+}
+const pairKey = (x, y) => [x, y].map(nameKey).sort().join('|');
+// Ottelu voittaja edellä: { W, L, ws, ls }
+const winFirst = x => x.sa >= x.sb ? { W: x.A, L: x.B, ws: x.sa, ls: x.sb } : { W: x.B, L: x.A, ws: x.sb, ls: x.sa };
+
+const BADGES = [
+  { id: 'winner', icon: '🏆', title: 'Turnausvoittaja', desc: 'Voitti turnauksen' },
+  { id: 'hattrick', icon: '👑', title: 'Hattutemppu', desc: '3 turnausvoittoa' },
+  { id: 'podium3', icon: '🎯', title: 'Tasainen', desc: 'Mitalisijalla 3 turnauksessa peräkkäin' },
+  { id: 'perfect', icon: '💯', title: 'Täydellinen turnaus', desc: 'Voitti turnauksen kaikki ottelunsa' },
+  { id: 'streak5', icon: '🔥', title: 'Kuumana', desc: '5 ottelun voittoputki' },
+  { id: 'streak10', icon: '☄️', title: 'Pysäyttämätön', desc: '10 ottelun voittoputki' },
+  { id: 'crush', icon: '💥', title: 'Murskavoitto', desc: 'Voitti ottelun vähintään 2/3:n marginaalilla (esim. 20–4)' },
+  { id: 'dreamteam', icon: '🤝', title: 'Unelmapari', desc: '5 voittoa saman parin kanssa' },
+  { id: 'rocket', icon: '📈', title: 'Nousukiito', desc: 'Ranking nousi yhdessä turnauksessa vähintään 30' },
+  { id: 'peak1100', icon: '⭐', title: 'Huippukunto', desc: 'Ranking vähintään 1100' },
+  { id: 'regular', icon: '🎖️', title: 'Vakiokasvo', desc: '10 turnausta' },
+  { id: 'workhorse', icon: '🐎', title: 'Työjuhta', desc: '50 ottelua' },
+];
+
+/* Ennätykset ja jokaisen pelaajan saavutukset yhdellä läpikäynnillä. */
+function computeAchievements() {
+  const tours = finishedTours();
+  const ratings = computeRatings();
+  const P = new Map(); // key -> { name, badges:Set, streak, best, tours, wins, games, podiumRun, partnerWins:Map }
+  const pl = name => {
+    const k = nameKey(name);
+    if (!P.has(k)) P.set(k, { key: k, name, badges: new Set(), streak: 0, best: 0, tours: 0, wins: 0, games: 0, podiumRun: 0, partnerWins: new Map() });
+    return P.get(k);
+  };
+  const rec = { bigWin: null, bestTour: null, pairs: new Map() };
+  for (const h of tours) {
+    const rows = computeStandings(h.players, h.rounds, h.points);
+    rows.forEach((r, i) => {
+      const p = pl(r.name); p.tours++;
+      if (i === 0) { p.wins++; p.badges.add('winner'); if (r.l === 0 && r.d === 0 && r.played > 0) p.badges.add('perfect'); }
+      p.podiumRun = i < 3 ? p.podiumRun + 1 : 0;
+      if (p.podiumRun >= 3) p.badges.add('podium3');
+      if (r.played >= 3) {
+        const ppg = r.pts / r.played / h.points; // osuus ottelun pisteistä
+        if (!rec.bestTour || ppg > rec.bestTour.ppg) rec.bestTour = { ppg, name: r.name, pts: r.pts, played: r.played, h };
+      }
+    });
+    for (const m of allMatches([h])) {
+      const aWin = m.sa > m.sb, bWin = m.sb > m.sa;
+      const margin = Math.abs(m.sa - m.sb) / h.points;
+      if (margin > 0 && (!rec.bigWin || margin > rec.bigWin.margin)) rec.bigWin = { margin, m, h };
+      [[m.A, aWin, bWin], [m.B, bWin, aWin]].forEach(([team, won, lost]) => {
+        team.forEach((n, i) => {
+          const p = pl(n); p.games++;
+          if (won) { p.streak++; p.best = Math.max(p.best, p.streak); if (margin >= 2 / 3) p.badges.add('crush'); }
+          else p.streak = 0;
+          const mate = team[1 - i];
+          if (won) { const c = (p.partnerWins.get(nameKey(mate)) || 0) + 1; p.partnerWins.set(nameKey(mate), c); if (c >= 5) p.badges.add('dreamteam'); }
+        });
+        const pk = pairKey(team[0], team[1]);
+        if (!rec.pairs.has(pk)) rec.pairs.set(pk, { names: [...team].sort(byName), g: 0, w: 0 });
+        const x = rec.pairs.get(pk); x.g++; if (won) x.w++;
+      });
+    }
+  }
+  for (const p of P.values()) {
+    if (p.wins >= 3) p.badges.add('hattrick');
+    if (p.best >= 5) p.badges.add('streak5');
+    if (p.best >= 10) p.badges.add('streak10');
+    if (p.tours >= 10) p.badges.add('regular');
+    if (p.games >= 50) p.badges.add('workhorse');
+    const r = ratings.get(p.key);
+    if (r) {
+      let prev = RATING_START, peak = RATING_START;
+      for (const x of r.hist) { if (x.r - prev >= 30) p.badges.add('rocket'); prev = x.r; peak = Math.max(peak, x.r); }
+      p.peak = peak;
+      if (peak >= 1100) p.badges.add('peak1100');
+    }
+  }
+  const list = [...P.values()];
+  const top = (f, min = 1) => { const best = list.filter(p => f(p) >= min).sort((a, b) => f(b) - f(a))[0]; return best ? { name: best.name, v: f(best) } : null; };
+  const pairsArr = [...rec.pairs.values()];
+  const minPairG = pairsArr.some(x => x.g >= 4) ? 4 : 2;
+  const bestPair = pairsArr.filter(x => x.g >= minPairG).sort((a, b) => b.w / b.g - a.w / a.g || b.g - a.g)[0];
+  return {
+    players: P,
+    records: {
+      bigWin: rec.bigWin, bestTour: rec.bestTour, bestPair,
+      streak: top(p => p.best, 2), tourWins: top(p => p.wins), tours: top(p => p.tours), games: top(p => p.games),
+      peak: top(p => Math.round(p.peak || 0), RATING_START + 1),
+    },
+  };
+}
+const badgeIcons = (ach, name, max = 3) => {
+  const p = ach.players.get(nameKey(name)); if (!p) return '';
+  const icons = BADGES.filter(b => p.badges.has(b.id)).reverse().slice(0, max).map(b => `<span title="${esc(b.title)}">${b.icon}</span>`).join('');
+  return icons ? ` <span class="badges">${icons}</span>` : '';
+};
+
+function recordsHtml(ach) {
+  const R = ach.records;
+  const item = (icon, title, body) => body ? `<div class="rec"><span class="rec-i">${icon}</span><div><div class="kl">${title}</div>${body}</div></div>` : '';
+  const mt = x => { const w = winFirst(x.m); return `<b>${esc(w.W.join(' & '))}</b> ${w.ws}–${w.ls} ${esc(w.L.join(' & '))}`; };
+  const fmt1 = v => v.toLocaleString('fi-FI', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  const html = [
+    item('🏆', 'Eniten turnausvoittoja', R.tourWins && `${playerLink(R.tourWins.name)} · <b>${R.tourWins.v}</b>`),
+    item('🔥', 'Pisin voittoputki', R.streak && `${playerLink(R.streak.name)} · <b>${R.streak.v} ottelua</b>`),
+    item('💥', 'Suurin voitto', R.bigWin && `${mt(R.bigWin)}<div class="small muted">${fmtDay(R.bigWin.h.date)}</div>`),
+    item('🚀', 'Paras turnaus', R.bestTour && `${playerLink(R.bestTour.name)} · <b>${fmt1(R.bestTour.pts / R.bestTour.played)} p/ottelu</b><div class="small muted">${fmtDay(R.bestTour.h.date)} · ${R.bestTour.h.points} p ottelut</div>`),
+    item('🤝', 'Paras pari', R.bestPair && `${esc(R.bestPair.names.join(' & '))} · <b>${Math.round(100 * R.bestPair.w / R.bestPair.g)} %</b> <span class="small muted">(${R.bestPair.g} ott.)</span>`),
+    item('⭐', 'Korkein ranking', R.peak && `${playerLink(R.peak.name)} · <b>${R.peak.v}</b>`),
+    item('🎖️', 'Eniten turnauksia', R.tours && `${playerLink(R.tours.name)} · <b>${R.tours.v}</b>`),
+    item('🐎', 'Eniten otteluita', R.games && `${playerLink(R.games.name)} · <b>${R.games.v}</b>`),
+  ].join('');
+  return html ? `<section class="card"><h2>📜 Ennätykset</h2><div class="recs">${html}</div></section>` : '';
+}
+
+function badgesHtml(ach, key) {
+  const p = ach.players.get(key);
+  const have = p ? p.badges : new Set();
+  return `
+  <section class="card">
+    <h2>🏅 Saavutukset (${have.size}/${BADGES.length})</h2>
+    <div class="badge-grid">
+      ${BADGES.map(b => `<div class="badge ${have.has(b.id) ? 'got' : ''}" title="${esc(b.desc)}">
+        <span class="bi">${b.icon}</span><span class="bt">${esc(b.title)}</span><span class="bd">${esc(b.desc)}</span></div>`).join('')}
+    </div>
+  </section>`;
+}
+
+/* ---------- kauden päättäjäiset: yhteenveto ja jaettava kuva ---------- */
+function seasonSummary(sid, year) {
+  const s = seriesById(sid);
+  const tours = finishedTours().filter(h => h.seriesId === sid && (h.date || '').startsWith(String(year)));
+  if (!tours.length) return null;
+  const table = seasonTable(sid, year);
+  const ratings = computeRatings();
+  const first = tours[0].date, last = tours[tours.length - 1].date;
+  // Eniten kehittynyt: rankingin muutos kauden alusta loppuun (väh. 2 turnausta kaudella)
+  let improved = null;
+  for (const row of table.filter(r => r.n >= 2)) {
+    const hist = (ratings.get(row.key) || { hist: [] }).hist;
+    const before = [...hist].reverse().find(x => x.date < first);
+    const after = [...hist].reverse().find(x => x.date <= last);
+    if (!after) continue;
+    const d = after.r - (before ? before.r : RATING_START);
+    if (!improved || d > improved.d) improved = { name: row.name, d };
+  }
+  // Paras pari ja suurin voitto kaudella
+  const pairs = new Map(); let bigWin = null;
+  for (const x of allMatches(tours)) {
+    const margin = Math.abs(x.sa - x.sb) / x.h.points;
+    if (margin > 0 && (!bigWin || margin > bigWin.margin)) bigWin = { margin, x };
+    [[x.A, x.sa > x.sb], [x.B, x.sb > x.sa]].forEach(([t, won]) => {
+      const k = pairKey(t[0], t[1]);
+      if (!pairs.has(k)) pairs.set(k, { names: [...t].sort(byName), g: 0, w: 0 });
+      const p = pairs.get(k); p.g++; if (won) p.w++;
+    });
+  }
+  const pa = [...pairs.values()]; const minG = pa.some(p => p.g >= 3) ? 3 : 1;
+  const bestPair = pa.filter(p => p.g >= minG).sort((a, b) => b.w / b.g - a.w / a.g || b.g - a.g)[0];
+  const active = [...table].sort((a, b) => b.n - a.n || b.sp - a.sp)[0];
+  return { s, year, tours, table, improved, bestPair, bigWin, active };
+}
+
+function seasonText(S) {
+  const L = [
+    `🎉 *${S.s.name} – kausi ${S.year}*`,
+    `${kpl(S.tours.length, 'turnaus', 'turnausta')} · ${S.table.length} pelaajaa`,
+    '',
+    `🏆 *Kauden mestari: ${S.table[0].name}* (${S.table[0].sp} p)`,
+    ...S.table.slice(1, 3).map((r, i) => `${['🥈', '🥉'][i]} ${r.name} (${r.sp} p)`),
+    '',
+  ];
+  if (S.improved && S.improved.d > 0) L.push(`📈 Eniten kehittynyt: ${S.improved.name} (ranking +${Math.round(S.improved.d)})`);
+  if (S.bestPair) L.push(`🤝 Kauden paras pari: ${S.bestPair.names.join(' & ')} (${Math.round(100 * S.bestPair.w / S.bestPair.g)} % voittoja)`);
+  if (S.bigWin) { const w = winFirst(S.bigWin.x); L.push(`💥 Kauden suurin voitto: ${w.W.join(' & ')} ${w.ws}–${w.ls} ${w.L.join(' & ')}`); }
+  if (S.active) L.push(`🎖️ Ahkerin: ${S.active.name} (${kpl(S.active.n, 'turnaus', 'turnausta')})`);
+  return L.join('\n');
+}
+
+function seasonImage(S) {
+  const W = 1080, H = 1350, PAD = 72;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const font = (w, px) => `${w} ${px}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const fit = (t, max) => { let s = t; while (s.length > 1 && g.measureText(s).width > max) s = s.slice(0, -1); return s === t ? s : s.slice(0, -1) + '…'; };
+  const rr = (x, y, w, h, r) => { g.beginPath(); g.roundRect ? g.roundRect(x, y, w, h, r) : g.rect(x, y, w, h); };
+  // tausta
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#1849b8'); bg.addColorStop(.6, '#1d63e0'); bg.addColorStop(1, '#1393d8');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#fff'; g.textAlign = 'center';
+  g.font = font(600, 36); g.globalAlpha = .9; g.fillText(`🎉 Kauden päättäjäiset ${S.year}`, W / 2, 110); g.globalAlpha = 1;
+  g.font = font(800, 60); g.fillText(fit(S.s.name, W - 2 * PAD), W / 2, 185);
+  // mestari
+  g.font = font(400, 150); g.fillText('🏆', W / 2, 370);
+  g.font = font(600, 34); g.globalAlpha = .9; g.fillText('KAUDEN MESTARI', W / 2, 430); g.globalAlpha = 1;
+  g.font = font(800, 76); g.fillText(fit(S.table[0].name, W - 2 * PAD), W / 2, 515);
+  g.font = font(600, 36); g.fillText(`${S.table[0].sp} pistettä · ${S.table[0].wins} turnausvoittoa`, W / 2, 568);
+  // 2. ja 3.
+  const half = (W - 2 * PAD - 24) / 2;
+  S.table.slice(1, 3).forEach((r, i) => {
+    const x = PAD + i * (half + 24), y = 610;
+    g.fillStyle = 'rgba(255,255,255,.16)'; rr(x, y, half, 120, 24); g.fill();
+    g.fillStyle = '#fff'; g.textAlign = 'left';
+    g.font = font(400, 54); g.fillText(['🥈', '🥉'][i], x + 24, y + 82);
+    g.font = font(700, 38); g.fillText(fit(r.name, half - 130), x + 100, y + 62);
+    g.font = font(500, 28); g.globalAlpha = .85; g.fillText(`${r.sp} pistettä`, x + 100, y + 98); g.globalAlpha = 1;
+  });
+  // palkinnot valkoisella kortilla
+  const awards = [
+    S.improved && S.improved.d > 0 && ['📈', 'Eniten kehittynyt', S.improved.name, `ranking +${Math.round(S.improved.d)}`],
+    S.bestPair && ['🤝', 'Kauden paras pari', S.bestPair.names.join(' & '), `${Math.round(100 * S.bestPair.w / S.bestPair.g)} % voittoja`],
+    S.bigWin && (w => ['💥', 'Suurin voitto', w.W.join(' & '), `${w.ws}–${w.ls}`])(winFirst(S.bigWin.x)),
+    S.active && ['🎖️', 'Ahkerin', S.active.name, kpl(S.active.n, 'turnaus', 'turnausta')],
+  ].filter(Boolean);
+  const top = 770, rowH = 118;
+  g.fillStyle = '#ffffff'; rr(PAD - 16, top, W - 2 * PAD + 32, awards.length * rowH + 30, 32); g.fill();
+  awards.forEach((a, i) => {
+    const y = top + 15 + i * rowH;
+    if (i) { g.fillStyle = '#d3e0f1'; g.fillRect(PAD + 10, y, W - 2 * PAD - 20, 2); }
+    g.textAlign = 'left'; g.fillStyle = '#12233d';
+    g.font = font(400, 54); g.fillText(a[0], PAD + 14, y + 78);
+    g.font = font(600, 26); g.fillStyle = '#586a84'; g.fillText(a[1].toUpperCase(), PAD + 100, y + 44);
+    g.font = font(800, 38); g.fillStyle = '#12233d'; g.fillText(fit(a[2], W - 2 * PAD - 420), PAD + 100, y + 90);
+    g.textAlign = 'right'; g.font = font(600, 30); g.fillStyle = '#1d5fd1'; g.fillText(fit(a[3], 330), W - PAD - 10, y + 88);
+  });
+  g.textAlign = 'center'; g.fillStyle = '#fff'; g.font = font(500, 28); g.globalAlpha = .85;
+  g.fillText(`${kpl(S.tours.length, 'turnaus', 'turnausta')} · ${S.table.length} pelaajaa · ${fmtDay(S.tours[0].date)}–${fmtDay(S.tours[S.tours.length - 1].date)}`, W / 2, H - 50);
+  return new Promise(res => c.toBlob(res, 'image/png'));
 }
 
 /* ---------- tulosten jakaminen (teksti WhatsAppiin, kuva) ---------- */
