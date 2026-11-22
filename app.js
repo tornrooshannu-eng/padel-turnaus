@@ -148,7 +148,7 @@ const activeCourts = () => courtsFor(state.players.length);
    Ottelun kulku tallennetaan pistelokina (m.log = 'abba…', a/b = kumpi joukkue voitti pisteen).
    Kaikki muu (pelit, erät, voittaja) lasketaan lokista, joten peruminen on vain viimeisen merkin poisto.
    Valmiissa ottelussa m.sa / m.sb = voitetut erät. */
-const TENNIS_DEFAULT = { sets: 3, games: 6, golden: true, stb: true };
+const TENNIS_DEFAULT = { sets: 3, games: 6, golden: true, stb: true, entry: 'sets' }; // entry: 'sets' = vain erätulokset, 'points' = piste kerrallaan
 const isTennis = T => !!T && T.format === 'tennis';
 const tcfg = T => Object.assign({}, TENNIS_DEFAULT, (T && T.tennis) || {});
 
@@ -199,17 +199,36 @@ function tennisPointLabels(r) {
 function setText(s, flip) {
   if (s.stb) { const [p, q] = flip ? [s.tb[1], s.tb[0]] : s.tb; return `[${p}–${q}]`; }
   const [x, y] = flip ? [s.b, s.a] : [s.a, s.b];
-  return `${x}–${y}${s.tb ? `(${Math.min(...s.tb)})` : ''}`;
+  return `${x}–${y}${s.tb && Math.min(...s.tb) ? `(${Math.min(...s.tb)})` : ''}`; // erätuloksina kirjatussa tiebreakissa pisteitä ei tiedetä (7–0)
 }
 const tennisScoreText = (r, flip) => r.sets.map(s => setText(s, flip)).join(' ');
 function setMatchLog(m, log, T = state) {
   const r = tennisReplay(log, tcfg(T));
   m.log = String(log || '').slice(0, r.used);
-  m.sa = r.winner ? r.sw[0] : null;
-  m.sb = r.winner ? r.sw[1] : null;
+  if (r.winner || !m.log) delete m.end;
+  m.sa = r.winner || m.end ? r.sw[0] : null;
+  m.sb = r.winner || m.end ? r.sw[1] : null;
 }
-/* Käsin syötetyt erätulokset → pisteloki (pelit vuorotellen, voittaja lopuksi). null = virheellinen tulos. */
-function setsToLog(list, cfg) {
+/* Ottelun voittaja. Kesken lopetettu ottelu (m.end) ratkeaa johtotilanteen mukaan: erät, pelit, pisteet. w = null: tasan. */
+function tennisOutcome(m, T = state) {
+  const r = tennisReplay(m.log, tcfg(T));
+  if (r.winner || !m.end) return { r, w: r.winner };
+  const d = (r.sw[0] - r.sw[1]) || (r.games[0] - r.games[1]) || (r.pts[0] - r.pts[1]);
+  return { r, w: d > 0 ? 'a' : d < 0 ? 'b' : null };
+}
+// Näytettävät erät: pelatut + kesken jäänyt erä
+const shownSets = r => r.winner ? r.sets : r.sets.concat(r.stb ? (r.pts[0] || r.pts[1] ? [{ stb: true, tb: [...r.pts] }] : []) : r.ga || r.gb ? [{ a: r.ga, b: r.gb }] : []);
+// Tulos tekstinä, kesken lopetetussa ottelussa myös kesken jäänyt erä ja merkintä
+const tennisMatchText = (m, T, flip) => { const { r } = tennisOutcome(m, T); return tennisScoreText({ sets: shownSets(r) }, flip) + (m.end && !r.winner ? ' (lopetettu)' : ''); };
+// Voittaja kaikille pelimuodoille: 'a', 'b' tai null
+function matchWinner(m, T = state) {
+  if (!isScored(m, T)) return null;
+  if (isTennis(T)) return tennisOutcome(m, T).w;
+  return m.sa > m.sb ? 'a' : m.sb > m.sa ? 'b' : null;
+}
+/* Käsin syötetyt erätulokset → pisteloki (pelit vuorotellen, voittaja lopuksi). null = virheellinen tulos.
+   partial: viimeinen erä saa olla kesken (esim. 3–2). Tiebreak-erän pisteitä ei tiedetä, joten se kirjataan 7–0. */
+function setsToLog(list, cfg, partial = false) {
   const alt = (x, y, unit) => {
     const lo = Math.min(x, y), w = x > y ? 'a' : 'b';
     let s = '';
@@ -221,20 +240,24 @@ function setsToLog(list, cfg) {
   let log = '';
   list.forEach(([x, y], i) => {
     if (cfg.sets === 3 && cfg.stb && i === 2) log += alt(x, y, pt);
-    else if (Math.max(x, y) === cfg.games + 1 && Math.min(x, y) === cfg.games) log += alt(cfg.games, cfg.games, game) + (x > y ? alt(7, 5, pt) : alt(5, 7, pt));
+    else if (Math.max(x, y) === cfg.games + 1 && Math.min(x, y) === cfg.games) log += alt(cfg.games, cfg.games, game) + (x > y ? alt(7, 0, pt) : alt(0, 7, pt));
     else log += alt(x, y, game);
   });
   const r = tennisReplay(log, cfg);
-  const ok = r.used === log.length && r.sets.length === list.length &&
-    r.sets.every((s, i) => s.stb ? s.tb[0] === list[i][0] && s.tb[1] === list[i][1] : s.a === list[i][0] && s.b === list[i][1]);
+  const same = (s, i) => s.stb ? s.tb[0] === list[i][0] && s.tb[1] === list[i][1] : s.a === list[i][0] && s.b === list[i][1];
+  const n = list.length, last = list[n - 1];
+  let ok = r.used === log.length && r.sets.length === n && r.sets.every(same);
+  // kesken oleva viimeinen erä: aiemmat erät valmiit, viimeisen tilanne täsmää
+  if (!ok && partial && n && !r.winner && r.used === log.length && r.sets.length === n - 1 && r.sets.every(same))
+    ok = r.stb ? r.pts[0] === last[0] && r.pts[1] === last[1] : r.ga === last[0] && r.gb === last[1] && !r.tb;
   return ok ? log : null;
 }
-const copyMatch = m => { const o = { court: m.court, a: m.a, b: m.b, sa: m.sa, sb: m.sb }; if (m.log) o.log = m.log; return o; };
+const copyMatch = m => { const o = { court: m.court, a: m.a, b: m.b, sa: m.sa, sb: m.sb }; if (m.log) o.log = m.log; if (m.end) o.end = true; return o; };
 const copyRounds = rounds => (rounds || []).map(r => ({ matches: r.matches.map(copyMatch), byes: r.byes || [] }));
 
 /* T = turnaus (nykyinen state tai historiamerkintä): { format, points, tennis, players, rounds } */
 function isScored(m, T = state) {
-  if (isTennis(T)) return Number.isInteger(m.sa) && Number.isInteger(m.sb) && m.sa !== m.sb;
+  if (isTennis(T)) return Number.isInteger(m.sa) && Number.isInteger(m.sb) && (m.sa !== m.sb || !!m.end);
   return Number.isInteger(m.sa) && Number.isInteger(m.sb) && m.sa >= 0 && m.sb >= 0 && m.sa + m.sb === T.points;
 }
 const roundComplete = (r, T = state) => r.matches.every(m => isScored(m, T));
@@ -251,17 +274,16 @@ function computeStandings(T) {
     for (const id of r.byes) if (s.has(id)) s.get(id).byes++;
     for (const m of r.matches) {
       if (!isScored(m, T)) continue;
-      let A = m.sa, B = m.sb;
-      if (ten) [A, B] = tennisReplay(m.log, cfg).games;
-      const add = (ids, own, opp, sOwn, sOpp) => ids.forEach(id => {
+      let A = m.sa, B = m.sb, cmp = A - B;
+      if (ten) { const o = tennisOutcome(m, T); [A, B] = o.r.games; cmp = o.w === 'a' ? 1 : o.w === 'b' ? -1 : 0; }
+      const add = (ids, own, opp, sOwn, sOpp, c) => ids.forEach(id => {
         const x = s.get(id); if (!x) return;
         x.pts += own; x.against += opp; x.played++;
         if (ten) { x.setsW += sOwn; x.setsL += sOpp; }
-        const cmp = ten ? sOwn - sOpp : own - opp;
-        if (cmp > 0) x.w++; else if (cmp < 0) x.l++; else x.d++;
+        if (c > 0) x.w++; else if (c < 0) x.l++; else x.d++;
       });
-      add(m.a, A, B, m.sa, m.sb);
-      add(m.b, B, A, m.sb, m.sa);
+      add(m.a, A, B, m.sa, m.sb, cmp);
+      add(m.b, B, A, m.sb, m.sa, -cmp);
     }
   }
   const diff = x => x.pts - x.against;
@@ -272,8 +294,12 @@ function computeStandings(T) {
 const standings = () => computeStandings(state);
 // Pelaajan tulos lyhyesti: "24 p" tai tenniksessä "2/3 V"
 // Sijoitukset: yhdessä ottelussa voittajapari jakaa 1. sijan ja häviäjät 3. sijan, muuten järjestysnumero
-const placeOf = (T, rows, i) => isTennis(T) && T.tennisMode === "fixed" ? (rows[i].w > 0 ? 1 : 3) : i + 1;
-const winnerName = (T, rows) => isTennis(T) && T.tennisMode === "fixed" ? rows.filter(r => r.w > 0).map(r => r.name).join(" & ") : rows[0].name;
+// Kiinteillä pareilla (tennisottelu / loppuottelu) tasatulokset jakavat sijan: 1 + paremmin sijoittuneiden määrä.
+const fixedT = T => isTennis(T) && T.tennisMode === 'fixed';
+const tkey = x => [x.w, x.setsW - x.setsL, x.pts - x.against];
+const better = (x, y) => { const a = tkey(x), b = tkey(y); for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i]; return false; };
+const placeOf = (T, rows, i) => fixedT(T) ? 1 + rows.filter(r => better(r, rows[i])).length : i + 1;
+const winnerName = (T, rows) => fixedT(T) ? rows.filter((r, i) => placeOf(T, rows, i) === 1).map(r => r.name).join(" & ") : rows[0].name;
 const scoreLabel = (T, row) => isTennis(T) ? `${row.w}/${row.played} V` : `${row.pts} p`;
 
 /* ---------- taukojen valinta ---------- */
@@ -478,15 +504,15 @@ function renderSetup() {
   <section class="card">
     <h2>Pelaajat (${n})</h2>
     <form id="addForm" class="row">
-      <input id="nameInput" class="grow" type="text" placeholder="Uusi pelaaja (useampi pilkulla)" autocomplete="off" enterkeyhint="done">
+      <input id="nameInput" class="grow" type="text" placeholder="Pelaajan nimi" autocomplete="off" enterkeyhint="done">
       <button class="primary" type="submit">Lisää</button>
     </form>
     <div class="chips">
-      ${state.players.map(p => `<span class="chip">${esc(p.name)}<button data-remove="${p.id}" aria-label="Poista ${esc(p.name)}">×</button></span>`).join('') || '<span class="muted">Ei vielä pelaajia. Tarvitaan vähintään 4.</span>'}
+      ${state.players.map(p => `<span class="chip">${esc(p.name)}<button data-remove="${p.id}" aria-label="Poista ${esc(p.name)}">×</button></span>`).join('') || '<span class="muted">Ei vielä pelaajia. Tarvitaan vähintään 4. Useita nimiä voi lisätä kerralla pilkulla erotettuina.</span>'}
     </div>
     <div class="btnrow">
-      <button id="pickBtn" ${savable ? '' : 'disabled'}>📋 Valitse tallennetuista</button>
-      ${n ? '<button id="saveListBtn">💾 Tallenna listaksi</button>' : ''}
+      <button id="pickBtn" ${savable ? '' : 'disabled'}>📋 Tallennetut</button>
+      ${n ? '<button id="saveListBtn">💾 Tallenna lista</button>' : ''}
     </div>
     ${savable ? '' : '<p class="muted small">Lisätyt pelaajat tallentuvat, ja voit myöhemmin valita heidät listasta.</p>'}
   </section>
@@ -501,11 +527,11 @@ function renderSetup() {
     <p class="muted">${state.format === 'americano'
       ? 'Parit vaihtuvat joka kierroksella niin, että jokainen pelaa mahdollisimman tasaisesti eri parien kanssa ja eri vastustajia vastaan.'
       : state.format === 'mexicano' ? 'Kentät muodostetaan sarjataulukon mukaan: 1.+4. vs 2.+3. jokaisella kentällä.'
-      : 'Normaali tennisten pistelasku: 15–30–40, pelit ja erät. Pisteet lasketaan kentällä napauttamalla.'}</p>
+      : 'Normaali tennisten pistelasku: pelit ja erät. Kiinteät parit = yksi ottelu neljällä pelaajalla (parit voi vaihtaa kesken pelin), vaihtuvat parit = useampi kierros.'}</p>
     ${ten ? `
     <p class="section-label" style="margin-top:10px">Pelimuoto</p>
     <div class="seg">
-      <button data-tmode="fixed" class="${state.tennisMode === 'fixed' ? 'on' : ''}">Yksi ottelu (4 pelaajaa)</button>
+      <button data-tmode="fixed" class="${state.tennisMode === 'fixed' ? 'on' : ''}">Kiinteät parit</button>
       <button data-tmode="rotate" class="${state.tennisMode !== 'fixed' ? 'on' : ''}">Vaihtuvat parit</button>
     </div>
     ${state.tennisMode === 'fixed' && n === 4 ? `
@@ -628,23 +654,26 @@ function startTournament() {
 function tennisSettingsHtml(cfg) {
   const b = (k, v, label) => `<button type="button" data-tset="${k}" data-tval="${v}" class="${cfg[k] === v ? 'on' : ''}">${label}</button>`;
   return `
-    <p class="section-label">Erät</p>
+    <p class="section-label">Tuloksen kirjaus</p>
+    <div class="seg">${b('entry', 'sets', 'Erätulokset')}${b('entry', 'points', 'Piste kerrallaan')}</div>
+    <p class="muted small" style="margin:6px 0 0">${cfg.entry === 'points' ? 'Jokainen piste napautetaan (15–30–40), pelit ja erät lasketaan automaattisesti.' : 'Kirjataan vain erien lopputulokset, esim. 6–4. Nopein tapa.'}</p>
+    <p class="section-label" style="margin-top:10px">Erät</p>
     <div class="seg">${b('sets', 1, '1 erä')}${b('sets', 3, 'Paras 3:sta')}</div>
     <p class="section-label" style="margin-top:10px">Erän pituus</p>
     <div class="seg">${b('games', 6, '6 peliä')}${b('games', 4, '4 peliä')}</div>
-    <p class="section-label" style="margin-top:10px">Tasatilanne 40–40</p>
-    <div class="seg">${b('golden', true, '⚡ Kultainen piste')}${b('golden', false, 'Etu (AD)')}</div>
+    ${cfg.entry === 'points' ? `<p class="section-label" style="margin-top:10px">Tasatilanne 40–40</p>
+    <div class="seg">${b('golden', true, '⚡ Kultainen piste')}${b('golden', false, 'Etu (AD)')}</div>` : ''}
     ${cfg.sets === 3 ? `
     <p class="section-label" style="margin-top:10px">Ratkaiseva erä</p>
     <div class="seg">${b('stb', true, 'Supertiebreak 10')}${b('stb', false, 'Normaali erä')}</div>` : ''}
     <p class="muted small" style="margin-bottom:0">Erä ${cfg.games}–${cfg.games}:ssä pelataan tiebreak 7 pisteeseen.
-      ${cfg.golden ? 'Kultainen piste: tilanteessa 40–40 seuraava piste ratkaisee pelin.' : 'Tilanteessa 40–40 peli jatkuu, kunnes toinen voittaa kaksi pistettä peräkkäin.'}
+      ${cfg.entry !== 'points' ? '' : cfg.golden ? 'Kultainen piste: tilanteessa 40–40 seuraava piste ratkaisee pelin.' : 'Tilanteessa 40–40 peli jatkuu, kunnes toinen voittaa kaksi pistettä peräkkäin.'}
       ${cfg.sets === 3 && cfg.stb ? 'Jos erät ovat 1–1, ratkaisee supertiebreak 10 pisteeseen.' : ''}</p>`;
 }
 function bindTennisSettings(root, cfg, onChange) {
   root.querySelectorAll('[data-tset]').forEach(btn => btn.onclick = () => {
     const v = btn.dataset.tval;
-    cfg[btn.dataset.tset] = v === 'true' ? true : v === 'false' ? false : +v;
+    cfg[btn.dataset.tset] = v === 'true' ? true : v === 'false' ? false : isNaN(+v) ? v : +v;
     onChange();
   });
 }
@@ -788,7 +817,7 @@ function matchesHtml() {
   const r = state.rounds[ri];
   const isLast = ri === state.rounds.length - 1;
   const chips = state.rounds.map((x, i) =>
-    `<button data-round="${i}" class="${i === ri ? 'on' : ''} ${roundComplete(x) ? 'done' : ''}">K${i + 1}</button>`).join('');
+    `<button data-round="${i}" class="${i === ri ? 'on' : ''} ${roundComplete(x) ? 'done' : ''}">${fixedT(state) ? 'Ottelu ' : 'K'}${i + 1}</button>`).join('');
   const ten = isTennis(state);
   const matches = r.matches.map((m, mi) => {
     if (ten) return tennisMatchHtml(m, mi);
@@ -810,34 +839,37 @@ function matchesHtml() {
   }).join('');
   const byes = r.byes.length ? `<p class="muted bye">Tauolla: ${r.byes.map(id => esc(nameOf(id))).join(', ')}</p>` : '';
   const complete = roundComplete(r);
+  const fixed = ten && state.tennisMode === 'fixed';
+  const single = fixed && state.rounds.length === 1;
   let actions = '';
   if (isLast) {
     if (finished()) {
       const top = standings();
-      const single = ten && state.tennisMode === 'fixed';
       const fm = single && state.rounds[0].matches[0];
-      const fr = fm && tennisReplay(fm.log, tcfg(state));
-      const winTeam = fr && (fr.winner === 'a' ? fm.a : fm.b);
+      const fo = fm && tennisOutcome(fm);
       const h = db.history.find(x => x.id === state.tid);
       const fin = !ten && h && finalOf(h.id);
+      const ended = state.rounds.some(x => x.matches.some(m => m.end));
       actions = single ? `
       <div class="card podium">
-        <div class="muted">${state.finalOf ? 'Loppuottelu' : 'Ottelu'} päättyi · tallennettu historiaan</div>
-        <div class="winner">🏆 ${winTeam.map(id => esc(nameOf(id))).join(' &amp; ')}</div>
-        <div class="muted">${tennisScoreText(fr, fr.winner === 'b')}</div>
-      </div>
-      ${state.finalOf && db.history.some(x => x.id === state.finalOf) ? '<button id="parentBtn">← Turnauksen tulokset</button>' : ''}` : `
+        <div class="muted">${state.finalOf ? 'Loppuottelu' : 'Ottelu'} ${ended ? 'lopetettiin' : 'päättyi'} · tallennettu historiaan</div>
+        <div class="winner">${fo.w ? `🏆 ${(fo.w === 'a' ? fm.a : fm.b).map(id => esc(nameOf(id))).join(' &amp; ')}` : '🤝 Tasan'}</div>
+        <div class="muted">${tennisMatchText(fm, state, fo.w === 'b')}</div>
+      </div>` : `
       <div class="card podium">
-        <div class="muted">Turnaus päättyi · tallennettu historiaan</div>
-        <div class="winner">🏆 ${esc(top[0].name)}</div>
+        <div class="muted">${fixed ? (state.finalOf ? 'Loppuottelut päättyivät' : 'Ottelut päättyivät') : 'Turnaus päättyi'} · tallennettu historiaan</div>
+        <div class="winner">🏆 ${esc(fixed ? winnerName(state, top) : top[0].name)}</div>
         <div class="muted">${ten
-          ? `${top[0].w} voittoa${top[1] ? ` · 2. ${esc(top[1].name)} (${top[1].w})` : ''}${top[2] ? ` · 3. ${esc(top[2].name)} (${top[2].w})` : ''}`
+          ? fixed ? `${scoreLabel(state, top[0])} · ${kpl(state.rounds.length, 'ottelu', 'ottelua')}`
+          : `${top[0].w} voittoa${top[1] ? ` · 2. ${esc(top[1].name)} (${top[1].w})` : ''}${top[2] ? ` · 3. ${esc(top[2].name)} (${top[2].w})` : ''}`
           : `${top[0].pts} pistettä${top[1] ? ` · 2. ${esc(top[1].name)} (${top[1].pts})` : ''}${top[2] ? ` · 3. ${esc(top[2].name)} (${top[2].pts})` : ''}`}</div>
       </div>
       ${!ten && state.players.length >= 4 ? (fin
         ? `<div class="info"><span>🎾 <b>Loppuottelu:</b> ${finalResultHtml(fin)}</span></div><button id="openFinalBtn">${fin.finished ? 'Näytä loppuottelu' : '▶ Jatka loppuottelua'}</button>`
         : `<button id="finalBtn" class="primary big">🎾 Loppuottelu tennispisteillä</button>
            <p class="muted small" style="margin:-4px 0 4px;text-align:center">${esc(top[0].name)} &amp; ${esc(top[3].name)} vs ${esc(top[1].name)} &amp; ${esc(top[2].name)} (1.+4. vs 2.+3.)</p>`) : ''}`;
+      if (fixed && state.players.length === 4) actions += '<button id="swapBtn">🔄 Uusi ottelu, valitse joukkueet</button>';
+      if (state.finalOf && db.history.some(x => x.id === state.finalOf)) actions += '<button id="parentBtn">← Turnauksen tulokset</button>';
       if (!state.finalOf) actions += `
       ${state.seriesId && seriesById(state.seriesId)
         ? `<div class="info series-banner"><span>⭐ Tallennettu vakioturnaukseen <b>${esc(seriesById(state.seriesId).name)}</b></span></div>
@@ -845,21 +877,25 @@ function matchesHtml() {
         : '<button id="seriesSaveBtn">⭐ Tallenna vakioturnaukseksi</button>'}`;
       actions += `
       <button id="shareBtn" class="${!ten && !fin ? '' : 'primary big'}">📤 Jaa tulokset</button>
-      ${single ? '' : '<button id="tableBtn">Näytä lopputulokset</button><button id="nextBtn">Pelaa lisäkierros</button>'}`;
+      ${single ? '' : `<button id="tableBtn">Näytä lopputulokset</button>${fixed ? '' : '<button id="nextBtn">Pelaa lisäkierros</button>'}`}`;
     } else {
-      actions = `<button id="nextBtn" class="primary big" ${complete ? '' : 'disabled'}>${complete ? 'Seuraava kierros →' : 'Syötä kaikki tulokset'}</button>`;
+      if (fixed && state.players.length === 4) actions = '<button id="swapBtn">🔄 Vaihda joukkueet</button>';
+      else actions = `<button id="nextBtn" class="primary big" ${complete ? '' : 'disabled'}>${complete ? 'Seuraava kierros →' : 'Syötä kaikki tulokset'}</button>`;
+      if (ten) actions += `<button id="stopBtn">⏹ Lopeta ${fixed ? (state.finalOf ? 'loppuottelu' : 'ottelu') : 'turnaus'} tähän</button>`;
     }
-    if (!(ten && state.tennisMode === 'fixed')) actions += `<button id="undoBtn" class="danger">Poista kierros ${ri + 1}</button>`;
+    if (!fixed) actions += `<button id="undoBtn" class="danger">Poista kierros ${ri + 1}</button>`;
+    else if (state.rounds.length > 1) actions += `<button id="undoBtn" class="danger">Poista ottelu ${ri + 1}</button>`;
   }
-  const single = ten && state.tennisMode === 'fixed';
   return `
   ${single ? '' : `<div class="rounds">${chips}</div>`}
   <section class="card">
-    <h2>${single ? (state.finalOf ? '🎾 Loppuottelu' : '🎾 Ottelu') : `Kierros ${ri + 1} / ${Math.max(state.roundsTarget, state.rounds.length)}`}</h2>
+    <h2>${single ? (state.finalOf ? '🎾 Loppuottelu' : '🎾 Ottelu') : fixed ? `🎾 ${state.finalOf ? 'Loppuottelu' : 'Ottelu'} ${ri + 1} / ${state.rounds.length}` : `Kierros ${ri + 1} / ${Math.max(state.roundsTarget, state.rounds.length)}`}</h2>
     ${matches}
     ${byes}
-    <p class="muted small">${ten
-      ? 'Napauta pisteen voittaneen joukkueen painiketta. Pelit, erät ja tiebreak etenevät automaattisesti. ↶ perii viimeisimmän pisteen. Tulokset tallentuvat automaattisesti.'
+    <p class="muted small">${ten && tcfg(state).entry !== 'points'
+      ? 'Kirjoita kunkin erän pelit (esim. 6–4). Kesken olevan erän voi kirjata tilanteena (esim. 3–2). Tulokset tallentuvat automaattisesti.'
+      : ten
+      ? 'Napauta pisteen voittaneen joukkueen painiketta. Pelit, erät ja tiebreak etenevät automaattisesti. ↶ peruu viimeisimmän pisteen. Tulokset tallentuvat automaattisesti.'
       : `Syötä toisen joukkueen pisteet, niin toisen pisteet täydentyvät automaattisesti (yhteensä ${state.points}). Tulokset tallentuvat automaattisesti.`}</p>
   </section>
   <div class="actions">${actions}</div>`;
@@ -909,6 +945,17 @@ function bindMatches() {
     save(); render();
   });
   app.querySelectorAll('[data-tedit]').forEach(b => b.onclick = () => openSetsDialog(ri, +b.dataset.tedit));
+  bindSetInputs(cur);
+  app.querySelectorAll('[data-tresume]').forEach(b => b.onclick = () => {
+    const r = cur(); if (!r) return;
+    const m = r.matches[+b.dataset.tresume]; if (!m) return;
+    delete m.end; setMatchLog(m, m.log);
+    save(); render();
+  });
+  const swb = document.getElementById('swapBtn');
+  if (swb) swb.onclick = openSwapDialog;
+  const spb = document.getElementById('stopBtn');
+  if (spb) spb.onclick = stopTournament;
   const fb = document.getElementById('finalBtn');
   if (fb) fb.onclick = () => openFinalDialog(state.tid);
   const ofb = document.getElementById('openFinalBtn');
@@ -928,8 +975,12 @@ function bindMatches() {
     const r = cur();
     if (!r || ri !== state.rounds.length - 1) return render();
     const hasScores = r.matches.some(hasAnyScore);
-    if (hasScores && !confirm(`Poistetaanko kierros ${ri + 1} tuloksineen?`)) return;
+    const fx = fixedT(state);
+    if (hasScores && !confirm(`Poistetaanko ${fx ? 'ottelu' : 'kierros'} ${ri + 1} tuloksineen?${fx ? ' Edellinen ottelu jatkuu siitä, mihin se jäi.' : ''}`)) return;
     state.rounds.pop();
+    // joukkueiden vaihdon peruminen: edellinen (kesken lopetettu) ottelu jatkuu
+    const pm = fx && state.rounds.length && state.rounds[state.rounds.length - 1].matches[0];
+    if (pm && pm.end) { delete pm.end; setMatchLog(pm, pm.log); }
     state.roundsTarget = Math.max(state.baseTarget || 1, state.rounds.length); // lisäkierroksen poisto palauttaa tavoitteen
     if (state.rounds.length === 0) {
       db.history = db.history.filter(h => h.id !== state.tid);
@@ -942,23 +993,90 @@ function bindMatches() {
 }
 
 /* ---------- tennisottelu: tulostaulu + pistelaskuri ---------- */
+/* Erätulostila: vain erien lopputulokset (esim. 6–4), ei pisteitä. Kesken olevan erän voi kirjata tilanteena (esim. 3–2). */
+function tennisSetsStatus(m) {
+  const cfg = tcfg(state), { r, w } = tennisOutcome(m);
+  if (r.winner) return `🏆 Ottelu päättyi ${tennisScoreText(r, r.winner === 'b')}`;
+  if (m.end) return `⏹ Lopetettu tilanteessa ${tennisScoreText({ sets: shownSets(r) }) || '0–0'}${w ? '' : ' · tasan'}`;
+  if (!m.log) return `Kirjaa erien tulokset, esim. ${cfg.games}–${cfg.games - 2}.${cfg.sets === 3 && cfg.stb ? ' Supertiebreak (STB) pisteinä, esim. 10–8.' : ''}`;
+  return r.stb ? `Erät 1–1 · supertiebreak 10 pisteeseen` : `Erät ${r.sw[0]}–${r.sw[1]}${r.ga || r.gb ? ` · erä ${r.sets.length + 1} kesken ${r.ga}–${r.gb}` : ''}`;
+}
+function tennisSetsHtml(m, mi) {
+  const cfg = tcfg(state), { r, w } = tennisOutcome(m);
+  const ended = !!m.end && !r.winner;
+  const shown = shownSets(r);
+  const stbCol = i => cfg.sets === 3 && cfg.stb && i === 2;
+  const val = (i, sd) => { const s = shown[i]; if (!s) return ''; return s.stb ? s.tb[sd] : sd ? s.b : s.a; };
+  const names = ids => ids.map(id => esc(nameOf(id))).join(' &amp; ');
+  const win = r.winner || (ended ? w : null);
+  return `
+    <div class="match tmatch" data-scored="${isScored(m) ? 1 : 0}">
+      ${activeCourts() > 1 ? `<div class="court">Kenttä ${m.court}</div>` : ''}
+      <table class="setgrid">
+        <thead><tr><th></th>${Array.from({ length: cfg.sets }, (_, i) => `<th>${stbCol(i) ? 'STB' : 'Erä ' + (i + 1)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${[0, 1].map(sd => `<tr class="${win === (sd ? 'b' : 'a') ? 'win' : ''}"><td class="names">${win === (sd ? 'b' : 'a') ? '🏆 ' : ''}${names(sd ? m.b : m.a)}</td>${Array.from({ length: cfg.sets }, (_, i) =>
+            `<td><input type="number" inputmode="numeric" min="0" max="${stbCol(i) ? 99 : cfg.games + 1}" data-sm="${mi}" data-set="${i}" data-sd="${sd}" value="${val(i, sd)}" ${ended ? 'disabled' : ''} aria-label="${stbCol(i) ? 'Supertiebreak' : 'Erä ' + (i + 1)}, ${names(sd ? m.b : m.a)}"></td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="tstatus" data-sst="${mi}">${tennisSetsStatus(m)}</div>
+      <p class="err" data-serr="${mi}" role="alert" style="text-align:center;margin:0"></p>
+      ${ended && state.shownRound >= state.rounds.length - 1 ? `<div class="tfoot"><button data-tresume="${mi}">▶ Jatka ottelua</button></div>` : ''}
+    </div>`;
+}
+function bindSetInputs(cur) {
+  const cfg = tcfg(state);
+  app.querySelectorAll('input[data-sm]').forEach(inp => {
+    const mi = +inp.dataset.sm;
+    inp.addEventListener('focus', () => inp.select());
+    inp.addEventListener('input', () => {
+      const r = cur(); const m = r && r.matches[mi]; if (!m) return;
+      const err = app.querySelector(`[data-serr="${mi}"]`);
+      const list = [];
+      for (let i = 0; i < cfg.sets; i++) {
+        const [x, y] = [0, 1].map(sd => app.querySelector(`input[data-sm="${mi}"][data-set="${i}"][data-sd="${sd}"]`).value.trim());
+        if (x === '' && y === '') break;
+        if (x === '' || y === '') break; // toinen luku vielä puuttuu
+        list.push([parseInt(x, 10), parseInt(y, 10)]);
+      }
+      const log = list.length ? setsToLog(list, cfg, true) : '';
+      if (log === null) {
+        err.textContent = `Erä ${list.length}: ${list[list.length - 1].join('–')} ei ole mahdollinen tulos (esim. ${cfg.games}–${cfg.games - 2}, ${cfg.games + 1}–${cfg.games - 1} tai ${cfg.games + 1}–${cfg.games}).`;
+        return;
+      }
+      err.textContent = '';
+      setMatchLog(m, log); save();
+      app.querySelector(`[data-sst="${mi}"]`).textContent = tennisSetsStatus(m);
+    });
+    // valmis/kesken-tila muuttui → piirretään uudelleen vasta kentästä poistuttaessa (ei keskeytä kirjoittamista)
+    inp.addEventListener('change', () => {
+      const r = cur(); const m = r && r.matches[mi]; if (!m) return;
+      const box = inp.closest('.tmatch');
+      if (String(isScored(m) ? 1 : 0) !== box.dataset.scored) render();
+    });
+  });
+}
+
 function tennisMatchHtml(m, mi) {
-  const cfg = tcfg(state), r = tennisReplay(m.log, cfg);
+  if (tcfg(state).entry !== 'points') return tennisSetsHtml(m, mi);
+  const cfg = tcfg(state), { r, w: ow } = tennisOutcome(m);
+  const ended = !!m.end && !r.winner;
   const [la, lb] = tennisPointLabels(r);
   // erät: pelatut + meneillään oleva (supertiebreakissa vain pisteet)
   const cols = r.winner || r.stb ? r.sets : r.sets.concat([{ a: r.ga, b: r.gb, cur: true }]);
   const names = ids => ids.map(id => esc(nameOf(id))).join(' &amp; ');
   const row = side => {
-    const own = side === 'a', won = r.winner === side;
+    const own = side === 'a', won = (r.winner || (ended ? ow : null)) === side;
     return `
       <div class="trow ${won ? 'win' : ''}">
         <span class="names">${names(own ? m.a : m.b)}</span>
-        ${cols.map(s => `<span class="tset ${s.cur ? 'cur' : ''}">${s.stb ? (own ? s.tb[0] : s.tb[1]) : own ? s.a : s.b}${s.tb && !s.stb ? `<sup>${own ? s.tb[0] : s.tb[1]}</sup>` : ''}</span>`).join('')}
-        <span class="tpt">${r.winner ? (won ? '🏆' : '') : own ? la : lb}</span>
+        ${cols.map(s => `<span class="tset ${s.cur ? 'cur' : ''}">${s.stb ? (own ? s.tb[0] : s.tb[1]) : own ? s.a : s.b}${s.tb && !s.stb && Math.min(...s.tb) ? `<sup>${own ? s.tb[0] : s.tb[1]}</sup>` : ''}</span>`).join('')}
+        <span class="tpt">${r.winner || ended ? (won ? '🏆' : '') : own ? la : lb}</span>
       </div>`;
   };
-  const golden = cfg.golden && !r.tb && r.pts[0] === 3 && r.pts[1] === 3;
+  const golden = !ended && cfg.golden && !r.tb && r.pts[0] === 3 && r.pts[1] === 3;
   const status = r.winner ? `Ottelu päättyi ${tennisScoreText(r, r.winner === 'b')}`
+    : ended ? `⏹ Lopetettu tilanteessa ${tennisScoreText({ sets: shownSets(r) }) || '0–0'}${ow ? '' : ' · tasan'}`
     : r.stb ? '🔥 Supertiebreak – 10 pisteeseen'
     : r.tb ? `Tiebreak – 7 pisteeseen · erä ${r.sets.length + 1}`
     : golden ? '⚡ Kultainen piste – seuraava piste ratkaisee'
@@ -968,14 +1086,14 @@ function tennisMatchHtml(m, mi) {
       ${activeCourts() > 1 ? `<div class="court">Kenttä ${m.court}</div>` : ''}
       <div class="tboard">${row('a')}${row('b')}</div>
       <div class="tstatus ${golden ? 'gold' : ''}">${status}</div>
-      ${r.winner ? '' : `
+      ${r.winner || ended ? '' : `
       <div class="tbtns">
         <button class="tpoint" data-tp="${mi}" data-side="a"><span class="plus">＋</span><span class="who">${names(m.a)}</span></button>
         <button class="tpoint" data-tp="${mi}" data-side="b"><span class="plus">＋</span><span class="who">${names(m.b)}</span></button>
       </div>`}
       <div class="tfoot">
-        <button data-tundo="${mi}" ${m.log ? '' : 'disabled'}>↶ Peru piste</button>
-        <button data-tedit="${mi}">✏️ Syötä erätulokset</button>
+        ${ended ? (state.shownRound >= state.rounds.length - 1 ? `<button data-tresume="${mi}">▶ Jatka ottelua</button>` : '') : `<button data-tundo="${mi}" ${m.log ? '' : 'disabled'}>↶ Peru piste</button>`}
+        <button data-tedit="${mi}">✏️ Erätulokset</button>
       </div>
     </div>`;
 }
@@ -1057,11 +1175,18 @@ function openTour(hid) {
 function finalResultHtml(f) {
   const m = f.rounds[0] && f.rounds[0].matches[0];
   if (!m) return '–';
-  const r = tennisReplay(m.log, tcfg(f));
+  if (!singleMatch(f)) {
+    const rows = computeStandings(f);
+    const n = kpl(f.rounds.length, 'ottelu', 'ottelua');
+    if (!rows[0].played) return `${n} <span class="tag open">Kesken</span>`;
+    return `${f.finished ? '🏆' : 'Johdossa:'} <b>${esc(winnerName(f, rows))}</b> (${scoreLabel(f, rows[0])}) · ${n}${f.finished ? '' : ' <span class="tag open">Kesken</span>'}`;
+  }
+  const { r, w } = tennisOutcome(m, f);
   const nm = ids => ids.map(id => esc(nameIn(f.players, id))).join(' &amp; ');
-  if (!r.winner) return `${nm(m.a)} vs ${nm(m.b)} <span class="tag open">Kesken${r.sets.length || r.ga || r.gb ? ' ' + tennisScoreText({ sets: r.sets.concat(r.stb ? [] : [{ a: r.ga, b: r.gb }]) }) : ''}</span>`;
-  const [W, L] = r.winner === 'a' ? [m.a, m.b] : [m.b, m.a];
-  return `<b>${nm(W)}</b> ${tennisScoreText(r, r.winner === 'b')} ${nm(L)}`;
+  if (!isScored(m, f)) return `${nm(m.a)} vs ${nm(m.b)} <span class="tag open">Kesken${shownSets(r).length ? ' ' + tennisScoreText({ sets: shownSets(r) }) : ''}</span>`;
+  if (!w) return `${nm(m.a)} ${tennisMatchText(m, f)} ${nm(m.b)} (tasan)`;
+  const [W, L] = w === 'a' ? [m.a, m.b] : [m.b, m.a];
+  return `<b>${nm(W)}</b> ${tennisMatchText(m, f, w === 'b')} ${nm(L)}`;
 }
 
 /* Loppuottelu Americanon/Mexicanon jälkeen: 1.+4. vs 2.+3. tennispisteillä. */
@@ -1106,6 +1231,82 @@ function startFinal(h, top, cfg) {
     schedule: [{ matches: [{ court: 1, a: [1, 4], b: [2, 3], sa: null, sb: null }], byes: [] }],
   });
   addRound();
+}
+
+/* Joukkueiden vaihto lennossa (tennisottelu / loppuottelu, 4 pelaajaa).
+   Jos ottelussa on jo pisteitä, se päättyy nykyiseen tilanteeseen ja uusi ottelu alkaa uusilla joukkueilla. */
+function openSwapDialog() {
+  const r = state.rounds[state.rounds.length - 1], m = r && r.matches[0];
+  if (!m || state.players.length !== 4) return;
+  const ids = state.players.map(p => p.id);
+  const done = isScored(m), started = !!m.log;
+  const key = (a, b) => [a, b].map(t => [...t].sort((x, y) => x - y).join('-')).sort().join('|');
+  const cur = key(m.a, m.b);
+  const opts = PAIRINGS.map(P => ({ a: [ids[P[0]], ids[P[1]]], b: [ids[P[2]], ids[P[3]]] }));
+  const nm = t => t.map(id => esc(nameOf(id))).join(' &amp; ');
+  const sc = started && !done ? tennisScoreText({ sets: shownSets(tennisReplay(m.log, tcfg(state))) }) : '';
+  picker.innerHTML = `
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="pickerTitle">🔄 ${done ? 'Uusi ottelu' : 'Vaihda joukkueet'}</h2>
+      <button class="icon" id="swClose" aria-label="Sulje">✕</button>
+    </div>
+    <div class="dlg-body">
+      <p class="muted small" style="margin-top:0">${done ? 'Valitse joukkueet seuraavaan otteluun. Pelatut ottelut pysyvät tuloksissa.'
+        : started ? `Nykyinen ottelu päättyy tilanteeseen <b>${sc || 'kesken'}</b> ja tallentuu tuloksiin (johdossa oleva saa voiton). Uusi ottelu alkaa valituilla joukkueilla.`
+        : 'Ottelussa ei ole vielä pisteitä, joten joukkueet vaihtuvat suoraan.'}</p>
+      <div class="swap-list">
+        ${opts.map((o, i) => {
+          const same = key(o.a, o.b) === cur;
+          return `<button class="swap-opt ${same ? 'on' : ''}" data-pair="${i}" ${same && !done ? 'disabled' : ''}>
+            <span>${nm(o.a)}</span><span class="vs">vs</span><span>${nm(o.b)}</span>
+            ${same ? `<span class="muted small">${done ? 'samat joukkueet uudestaan' : 'nykyiset joukkueet'}</span>` : ''}
+          </button>`;
+        }).join('')}
+      </div>
+    </div>
+  </div>`;
+  if (typeof picker.showModal === 'function') picker.showModal(); else picker.setAttribute('open', '');
+  document.getElementById('swClose').onclick = closePicker;
+  picker.querySelectorAll('[data-pair]').forEach(b => b.onclick = () => {
+    const o = opts[+b.dataset.pair];
+    const last = state.rounds[state.rounds.length - 1].matches[0];
+    if (!last.log) { last.a = o.a; last.b = o.b; }
+    else {
+      if (!isScored(last)) { last.end = true; setMatchLog(last, last.log); }
+      state.rounds.push({ matches: [{ court: 1, a: o.a, b: o.b, sa: null, sb: null }], byes: [] });
+    }
+    state.roundsTarget = state.rounds.length;
+    state.shownRound = state.rounds.length - 1;
+    state.view = 'matches';
+    closePicker(); save(); render(); window.scrollTo(0, 0);
+  });
+}
+
+/* Lopetus kesken: kesken olevat ottelut tallentuvat nykyiseen tilanteeseen, pelaamattomat poistetaan. */
+function stopTournament() {
+  const fx = fixedT(state);
+  const what = fx ? (state.finalOf ? 'loppuottelu' : 'ottelu') : 'turnaus';
+  if (!confirm(`Lopetetaanko ${what} tähän?\n\nKesken oleva ottelu tallentuu nykyisellä tilanteella: johdossa oleva joukkue (erät, sitten pelit) saa voiton. Pelaamattomat ottelut poistetaan. Tulokset jäävät historiaan.`)) return;
+  state.rounds.forEach(r => {
+    r.matches = r.matches.filter(m => isScored(m) || m.log);
+    r.matches.forEach(m => { if (!isScored(m)) { m.end = true; setMatchLog(m, m.log); } });
+  });
+  state.rounds = state.rounds.filter(r => r.matches.length);
+  if (!state.rounds.length) {
+    // ei yhtään pelattua pistettä: ei mitään tallennettavaa
+    db.history = db.history.filter(h => h.id !== state.tid);
+    const sid = state.seriesId, back = state.finalOf;
+    endTournament(); state.seriesId = sid;
+    save();
+    if (back && db.history.some(h => h.id === back)) return openTour(back);
+    render(); window.scrollTo(0, 0); return;
+  }
+  state.roundsTarget = state.rounds.length;
+  state.baseTarget = Math.min(state.baseTarget || 1, state.rounds.length);
+  state.shownRound = state.rounds.length - 1;
+  state.view = 'matches';
+  save(); render(); window.scrollTo(0, 0);
 }
 
 function refreshRoundStatus(r, ri) {
@@ -1189,7 +1390,7 @@ function renderHistory() {
     ${anyTennis ? `
     <div class="seg">
       <button data-hfilter="all" class="${filter === 'all' ? 'on' : ''}">Kaikki</button>
-      <button data-hfilter="points" class="${filter === 'points' ? 'on' : ''}">Pisteturnaukset</button>
+      <button data-hfilter="points" class="${filter === 'points' ? 'on' : ''}">Pistepelit</button>
       <button data-hfilter="tennis" class="${filter === 'tennis' ? 'on' : ''}">🎾 Tennis</button>
     </div>` : ''}
   </section>
@@ -1214,7 +1415,7 @@ function renderHistory() {
 }
 
 // Yhden ottelun (kiinteät parit) tulos historiassa
-const singleMatch = h => isTennis(h) && h.tennisMode === 'fixed' && h.rounds[0] && h.rounds[0].matches[0];
+const singleMatch = h => fixedT(h) && h.rounds.length === 1 && h.rounds[0].matches[0];
 function histCardHtml(x) {
   const top = computeStandings(x)[0];
   const played = x.rounds.filter(r => roundComplete(r, x)).length;
@@ -1248,8 +1449,9 @@ function renderHistoryDetail(h) {
     const s = isScored(m, h);
     const A = `${nm(m.a[0])} &amp; ${nm(m.a[1])}`, B = `${nm(m.b[0])} &amp; ${nm(m.b[1])}`;
     let score = s ? `${m.sa}–${m.sb}` : '–';
-    if (ten) { const r = tennisReplay(m.log, cfg); score = r.sets.length ? tennisScoreText(r) + (r.winner ? '' : ' …') : m.log ? 'kesken' : '–'; }
-    return `<div class="rres">${s && m.sa > m.sb ? `<b>${A}</b>` : A} ${score} ${s && m.sb > m.sa ? `<b>${B}</b>` : B}</div>`;
+    if (ten) { const r = tennisReplay(m.log, cfg); score = s ? tennisMatchText(m, h) : r.sets.length ? tennisScoreText(r) + ' …' : m.log ? 'kesken' : '–'; }
+    const w = matchWinner(m, h);
+    return `<div class="rres">${w === 'a' ? `<b>${A}</b>` : A} ${score} ${w === 'b' ? `<b>${B}</b>` : B}</div>`;
   };
   app.innerHTML = `
   <div class="actions" style="margin:0 0 12px"><button id="backBtn">← Takaisin historiaan</button></div>
@@ -1283,7 +1485,7 @@ function renderHistoryDetail(h) {
   <section class="card">
     <h2>Ottelut</h2>
     ${h.rounds.map((r, i) => `
-      <p class="section-label" style="margin-top:${i ? 12 : 0}px">Kierros ${i + 1}</p>
+      <p class="section-label" style="margin-top:${i ? 12 : 0}px">${fixedT(h) ? 'Ottelu' : 'Kierros'} ${i + 1}</p>
       ${r.matches.map(matchLine).join('')}
       ${r.byes.length ? `<div class="muted small">Tauolla: ${r.byes.map(nm).join(', ')}</div>` : ''}`).join('')}
   </section>`}
@@ -1361,7 +1563,7 @@ function openSeriesDialog(hid) {
     <div class="dlg-body">
       <p class="section-label">Uusi vakioturnaus</p>
       <form id="sdForm" class="row">
-        <input id="sdName" class="grow" type="text" placeholder="Nimi, esim. Tiistain americano" maxlength="40" autocomplete="off" required>
+        <input id="sdName" class="grow" type="text" placeholder="Esim. Tiistaipadel" maxlength="40" autocomplete="off" required>
         <button class="primary" type="submit">Tallenna</button>
       </form>
       <p class="muted small">Vakio-osallistujiksi tallentuvat tämän turnauksen ${h.players.length} pelaajaa: ${h.players.map(p => esc(p.name)).sort(byName).join(', ')}.</p>
@@ -1530,7 +1732,7 @@ function selectSeries(id) {
 }
 
 /* ---------- pilvisynkronointi (cloud.js) ---------- */
-const roundsKey = rounds => stable((rounds || []).map(r => [r.byes, r.matches.map(m => [m.court, m.a, m.b, m.sa, m.sb, m.log || ""])]));
+const roundsKey = rounds => stable((rounds || []).map(r => [r.byes, r.matches.map(m => [m.court, m.a, m.b, m.sa, m.sb, m.log || "", m.end ? 1 : 0])]));
 
 /* Toisella puhelimella tehdyt muutokset käynnissä olevaan turnaukseen. */
 function mergeCurrent() {
@@ -1750,11 +1952,11 @@ const mainTours = () => finishedTours().filter(h => !h.finalOf);
 function matchResult(m, h) {
   if (!isScored(m, h)) return null;
   if (isTennis(h)) {
-    const r = tennisReplay(m.log, tcfg(h));
-    const [ga, gb] = r.games, aw = r.winner === 'a';
-    const margin = Math.max(0, ga + gb ? (aw ? ga - gb : gb - ga) / (ga + gb) : 0);
+    const { r, w } = tennisOutcome(m, h);
+    const [ga, gb] = r.games, aw = w === 'a', bw = w === 'b';
+    const margin = w ? Math.max(0, ga + gb ? (aw ? ga - gb : gb - ga) / (ga + gb) : 0) : 0;
     const ws = 0.6 + 0.4 * margin; // voittaja saa aina yli puolet, selvä voitto enemmän
-    return { aw, bw: !aw, share: aw ? ws : 1 - ws, margin, tennis: true, txt: flip => tennisScoreText(r, flip) };
+    return { aw, bw, share: w ? (aw ? ws : 1 - ws) : 0.5, margin, tennis: true, txt: flip => tennisMatchText(m, h, flip) };
   }
   if (m.sa + m.sb === 0) return null;
   return { aw: m.sa > m.sb, bw: m.sb > m.sa, share: m.sa / (m.sa + m.sb), margin: Math.abs(m.sa - m.sb) / h.points,
@@ -1803,7 +2005,7 @@ function playerStats(key, seriesId) {
     res.name = me.name;
     const rows = computeStandings(h);
     const idx = rows.findIndex(r => r.id === me.id), place = placeOf(h, rows, idx);
-    if (h.finalOf) { res.finals++; if (rows[idx].w > 0) res.finalWins++; }
+    if (h.finalOf) { res.finals++; if (place === 1 && rows[idx].played) res.finalWins++; }
     else res.tours.push({ h, place, of: rows.length, pts: rows[idx].pts, label: scoreLabel(h, rows[idx]), series: h.seriesId && seriesById(h.seriesId) });
     for (const r of h.rounds) for (const m of r.matches) {
       const mr = matchResult(m, h);
@@ -2036,7 +2238,7 @@ function computeAchievements() {
     const rows = computeStandings(h);
     if (h.finalOf) {
       // loppuottelu: voittajapari saa merkin, mutta se ei ole erillinen turnaus
-      rows.filter(r => r.w > 0).forEach(r => pl(r.name).badges.add('final'));
+      rows.filter((r, i) => r.played && placeOf(h, rows, i) === 1).forEach(r => pl(r.name).badges.add('final'));
     } else rows.forEach((r, i) => {
       const p = pl(r.name); p.tours++;
       const place = placeOf(h, rows, i);
@@ -2125,7 +2327,7 @@ function badgesHtml(ach, key) {
     <h2>🏅 Saavutukset (${have.size}/${BADGES.length})</h2>
     <div class="badge-grid">
       ${BADGES.map(b => `<div class="badge ${have.has(b.id) ? 'got' : ''}" title="${esc(b.desc)}">
-        <span class="bi">${b.icon}</span><span class="bt">${esc(b.title)}</span><span class="bd">${esc(b.desc)}</span></div>`).join('')}
+        <span class="bi">${b.icon}</span><span class="bt">${esc(b.title).replace(/(.{4,})(voittaja|mätön|voitto|temppu|kasvo|kunto|kiito)$/, '$1&shy;$2')}</span><span class="bd">${esc(b.desc)}</span></div>`).join('')}
     </div>
   </section>`;
 }
@@ -2237,7 +2439,7 @@ function seasonImage(S) {
 
 /* ---------- tulosten jakaminen (teksti WhatsAppiin, kuva) ---------- */
 const fmtName = f => f === "americano" ? "Americano" : f === "tennis" ? "Tennis" : "Mexicano";
-const tennisDesc = cfg => [cfg.sets === 3 ? "paras 3:sta" : "1 erä", cfg.games === 4 ? "4 pelin erät" : "", cfg.golden ? "kultainen piste" : "", cfg.sets === 3 && cfg.stb ? "supertiebreak" : ""].filter(Boolean).join(" · ");
+const tennisDesc = cfg => [cfg.sets === 3 ? "paras 3:sta" : "1 erä", cfg.games === 4 ? "4 pelin erät" : "", cfg.golden && cfg.entry === "points" ? "kultainen piste" : "", cfg.sets === 3 && cfg.stb ? "supertiebreak" : ""].filter(Boolean).join(" · ");
 // Turnausmuoto kuvauksena: "Americano · 24 p" tai "🎾 Loppuottelu · paras 3:sta · kultainen piste"
 const fmtFormat = T => isTennis(T)
   ? `🎾 ${T.finalOf ? "Loppuottelu" : T.tennisMode === "fixed" ? "Tennisottelu" : "Tennis, vaihtuvat parit"} · ${tennisDesc(tcfg(T))}`
@@ -2247,13 +2449,18 @@ const kpl = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 // Yhden ottelun tulos tekstinä, voittaja ensin: "Liisa & Pekka 6–4 6–3 Matti & Anna"
 function finalText(f) {
-  const m = f.rounds[0] && f.rounds[0].matches[0];
-  if (!m) return '';
-  const r = tennisReplay(m.log, tcfg(f));
+  if (!singleMatch(f)) {
+    const rows = computeStandings(f);
+    if (!rows[0] || !rows[0].played) return `${kpl(f.rounds.length, 'ottelu', 'ottelua')} (kesken)`;
+    return `${f.finished ? '' : 'Johdossa: '}${winnerName(f, rows)} (${scoreLabel(f, rows[0])}) · ${kpl(f.rounds.length, 'ottelu', 'ottelua')}`;
+  }
+  const m = f.rounds[0].matches[0];
+  const { r, w } = tennisOutcome(m, f);
   const nm = ids => ids.map(id => nameIn(f.players, id)).join(' & ');
-  if (!r.winner) return `${nm(m.a)} vs ${nm(m.b)} (kesken${r.sets.length ? ' ' + tennisScoreText(r) : ''})`;
-  const [W, L] = r.winner === 'a' ? [m.a, m.b] : [m.b, m.a];
-  return `${nm(W)} ${tennisScoreText(r, r.winner === 'b')} ${nm(L)}`;
+  if (!isScored(m, f)) return `${nm(m.a)} vs ${nm(m.b)} (kesken${r.sets.length ? ' ' + tennisScoreText(r) : ''})`;
+  if (!w) return `${nm(m.a)} ${tennisMatchText(m, f)} ${nm(m.b)} (tasan)`;
+  const [W, L] = w === 'a' ? [m.a, m.b] : [m.b, m.a];
+  return `${nm(W)} ${tennisMatchText(m, f, w === 'b')} ${nm(L)}`;
 }
 
 function resultsText(h) {

@@ -1,13 +1,13 @@
 /* Service worker: sovellus toimii myös ilman nettiyhteyttä.
    Muista nostaa VERSION ja index.html:n ?v= -tunnisteet jokaisessa julkaisussa. */
-const VERSION = 'v10';
+const VERSION = 'v12';
 const CACHE = 'padel-' + VERSION;
 const SHELL = [
   './',
-  'style.css?v=10',
-  'app.js?v=10',
-  'cloud.js?v=10',
-  'cloud-config.js?v=10',
+  'style.css?v=12',
+  'app.js?v=12',
+  'cloud.js?v=12',
+  'cloud-config.js?v=12',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
